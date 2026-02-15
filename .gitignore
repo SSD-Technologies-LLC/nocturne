@@ -18,3 +18,7 @@ Thumbs.db
 
 # Build
 dist/
+
+# nocturne-mesh
+nocturne-mesh/node_modules/
+nocturne-mesh/dist/
