@@ -11,6 +11,7 @@ type NodeInfo struct {
 	ID          string
 	Address     string
 	PublicKey   []byte
+	ShardSecret []byte // shared secret for shard download auth
 	MaxStorage  int64
 	UsedStorage int64
 	LastSeen    time.Time

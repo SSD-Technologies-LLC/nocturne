@@ -22,10 +22,11 @@ type WSResponse struct {
 
 // RegisterPayload is the payload for a "register" message.
 type RegisterPayload struct {
-	ID         string `json:"id"`
-	Address    string `json:"address"`
-	PublicKey  []byte `json:"public_key"`
-	MaxStorage int64  `json:"max_storage"`
+	ID          string `json:"id"`
+	Address     string `json:"address"`
+	PublicKey   []byte `json:"public_key"`
+	ShardSecret []byte `json:"shard_secret"`
+	MaxStorage  int64  `json:"max_storage"`
 }
 
 var upgrader = websocket.Upgrader{
@@ -68,10 +69,11 @@ func HandleWebSocket(tracker *Tracker) http.HandlerFunc {
 					continue
 				}
 				node := &NodeInfo{
-					ID:         payload.ID,
-					Address:    payload.Address,
-					PublicKey:  payload.PublicKey,
-					MaxStorage: payload.MaxStorage,
+					ID:          payload.ID,
+					Address:     payload.Address,
+					PublicKey:   payload.PublicKey,
+					ShardSecret: payload.ShardSecret,
+					MaxStorage:  payload.MaxStorage,
 				}
 				tracker.Register(node)
 				nodeID = payload.ID

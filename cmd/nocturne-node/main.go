@@ -4,6 +4,7 @@ package main
 import (
 	"crypto/ed25519"
 	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -175,9 +176,23 @@ func cmdConnect() {
 	maxStorage := parseMaxStorage(os.Args[2:])
 	trackerURL := parseTrackerURL(os.Args[2:])
 
-	// 5. Start shard HTTP server on random port.
+	// 5. Generate shard secret for download authentication.
+	shardSecret := make([]byte, 32)
+	if _, err := rand.Read(shardSecret); err != nil {
+		fmt.Fprintf(os.Stderr, "Error: generating shard secret: %v\n", err)
+		os.Exit(1)
+	}
+	expectedAuth := "Bearer " + hex.EncodeToString(shardSecret)
+
+	// 6. Start shard HTTP server on random port.
 	shardHandler := http.NewServeMux()
 	shardHandler.HandleFunc("/shard/", func(w http.ResponseWriter, r *http.Request) {
+		// Verify shard download authorization.
+		if r.Header.Get("Authorization") != expectedAuth {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+
 		shardID := strings.TrimPrefix(r.URL.Path, "/shard/")
 		if shardID == "" {
 			http.Error(w, "shard ID required", http.StatusBadRequest)
@@ -202,7 +217,7 @@ func cmdConnect() {
 
 	go http.Serve(listener, shardHandler)
 
-	// 6. Connect to tracker via WebSocket.
+	// 7. Connect to tracker via WebSocket.
 	conn, _, err := websocket.DefaultDialer.Dial(trackerURL, nil)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: connecting to tracker: %v\n", err)
@@ -210,12 +225,13 @@ func cmdConnect() {
 	}
 	defer conn.Close()
 
-	// 7. Send register message.
+	// 8. Send register message (includes shard secret for download auth).
 	regPayload, _ := json.Marshal(mesh.RegisterPayload{
-		ID:         nodeID,
-		Address:    shardAddr,
-		PublicKey:  pub,
-		MaxStorage: maxStorage,
+		ID:          nodeID,
+		Address:     shardAddr,
+		PublicKey:   pub,
+		ShardSecret: shardSecret,
+		MaxStorage:  maxStorage,
 	})
 	regMsg := mesh.WSMessage{
 		Type:    "register",
@@ -237,7 +253,7 @@ func cmdConnect() {
 		os.Exit(1)
 	}
 
-	// 8. Write PID file.
+	// 9. Write PID file.
 	if err := os.WriteFile(pidFile, []byte(strconv.Itoa(os.Getpid())), 0600); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: writing PID file: %v\n", err)
 		os.Exit(1)
@@ -248,7 +264,7 @@ func cmdConnect() {
 	fmt.Printf("Connected to Nocturne mesh. Node ID: %s\n", nodeID)
 	fmt.Printf("Shard server listening on %s\n", shardAddr)
 
-	// 9. Start heartbeat loop.
+	// 10. Start heartbeat loop.
 	heartbeatDone := make(chan struct{})
 	go func() {
 		defer close(heartbeatDone)
@@ -271,7 +287,7 @@ func cmdConnect() {
 		}
 	}()
 
-	// 10. Write stats periodically.
+	// 11. Write stats periodically.
 	statsDone := make(chan struct{})
 	go func() {
 		ticker := time.NewTicker(5 * time.Second)
@@ -296,7 +312,7 @@ func cmdConnect() {
 		}
 	}()
 
-	// 11. Block until signal.
+	// 12. Block until signal.
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 	<-sigCh
