@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"io/fs"
 	"net/http"
+	"time"
 
 	"github.com/ssd-technologies/nocturne/internal/storage"
 	"github.com/ssd-technologies/nocturne/web"
@@ -11,17 +12,19 @@ import (
 
 // Server is the main HTTP server for the Nocturne API.
 type Server struct {
-	db     *storage.DB
-	secret string
-	mux    *http.ServeMux
+	db      *storage.DB
+	secret  string
+	mux     *http.ServeMux
+	limiter *rateLimiter
 }
 
 // New creates a new Server with all routes registered.
 func New(db *storage.DB, secret string) *Server {
 	s := &Server{
-		db:     db,
-		secret: secret,
-		mux:    http.NewServeMux(),
+		db:      db,
+		secret:  secret,
+		mux:     http.NewServeMux(),
+		limiter: newRateLimiter(120, time.Minute),
 	}
 	s.routes()
 	return s

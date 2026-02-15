@@ -6,10 +6,12 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/ssd-technologies/nocturne/internal/agent"
 )
@@ -334,5 +336,107 @@ func TestQuarantinedAgentBlocked(t *testing.T) {
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusForbidden {
 		t.Fatalf("post-quarantine: status %d, want 403", resp.StatusCode)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Security: unauthenticated access tests
+// ---------------------------------------------------------------------------
+
+func TestUnauthenticatedAgentRequestsRejected(t *testing.T) {
+	srv := setupTestServer(t)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+
+	endpoints := []struct {
+		method string
+		path   string
+	}{
+		{"GET", "/api/agent/knowledge"},
+		{"POST", "/api/agent/knowledge"},
+		{"GET", "/api/agent/compute"},
+		{"GET", "/api/agent/awareness"},
+		{"GET", "/api/agent/channels"},
+		{"GET", "/api/agent/stats"},
+		{"POST", "/api/agent/reflect"},
+	}
+
+	for _, ep := range endpoints {
+		req, _ := http.NewRequest(ep.method, ts.URL+ep.path, nil)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("%s %s: %v", ep.method, ep.path, err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusUnauthorized {
+			t.Errorf("%s %s: got %d, want 401", ep.method, ep.path, resp.StatusCode)
+		}
+	}
+}
+
+func TestAdminEndpointsRequireSecret(t *testing.T) {
+	srv := setupTestServer(t)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+
+	// Try admin endpoint without secret
+	body := []byte(`{"public_key":"abc","label":"test","max_agents":5}`)
+	req, _ := http.NewRequest("POST", ts.URL+"/api/admin/operator", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	resp, _ := http.DefaultClient.Do(req)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Errorf("admin without secret: got %d, want 401", resp.StatusCode)
+	}
+
+	// Try with wrong secret
+	req, _ = http.NewRequest("POST", ts.URL+"/api/admin/operator", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Admin-Secret", "wrong-secret")
+	resp, _ = http.DefaultClient.Do(req)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Errorf("admin wrong secret: got %d, want 401", resp.StatusCode)
+	}
+}
+
+func TestInvalidSignatureRejected(t *testing.T) {
+	srv := setupTestServer(t)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+
+	// Request with headers but invalid signature
+	req, _ := http.NewRequest("GET", ts.URL+"/api/agent/channels", nil)
+	req.Header.Set("X-Agent-ID", "nonexistent1234")
+	req.Header.Set("X-Agent-Timestamp", fmt.Sprintf("%d", time.Now().Unix()))
+	req.Header.Set("X-Agent-Signature", "deadbeef")
+	resp, _ := http.DefaultClient.Do(req)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Errorf("invalid sig: got %d, want 401", resp.StatusCode)
+	}
+}
+
+func TestRateLimiting(t *testing.T) {
+	srv := setupTestServer(t)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+
+	// Hammer an endpoint -- should eventually get 429
+	var got429 bool
+	for i := 0; i < 200; i++ {
+		req, _ := http.NewRequest("GET", ts.URL+"/api/agent/channels", nil)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			continue
+		}
+		resp.Body.Close()
+		if resp.StatusCode == http.StatusTooManyRequests {
+			got429 = true
+			break
+		}
+	}
+	if !got429 {
+		t.Error("expected 429 Too Many Requests after rapid-fire requests")
 	}
 }

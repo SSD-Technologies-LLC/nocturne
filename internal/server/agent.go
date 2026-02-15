@@ -41,8 +41,13 @@ func (s *Server) agentRoutes() {
 // ---------------------------------------------------------------------------
 
 // adminAuth checks the X-Admin-Secret header against the server secret.
-// Returns false (writing a 401) if the header is missing or incorrect.
+// Returns false (writing a 401 or 429) if the header is missing, incorrect,
+// or the client has been rate-limited.
 func (s *Server) adminAuth(w http.ResponseWriter, r *http.Request) bool {
+	if !s.limiter.allow(getIP(r)) {
+		writeError(w, http.StatusTooManyRequests, "rate limit exceeded")
+		return false
+	}
 	if r.Header.Get("X-Admin-Secret") != s.secret {
 		writeError(w, http.StatusUnauthorized, "invalid admin secret")
 		return false
@@ -54,6 +59,11 @@ func (s *Server) adminAuth(w http.ResponseWriter, r *http.Request) bool {
 // It returns the agent key, operator, and true on success.
 // On failure it writes the appropriate HTTP error and returns false.
 func (s *Server) agentAuth(w http.ResponseWriter, r *http.Request, body []byte) (*storage.AgentKey, *storage.Operator, bool) {
+	if !s.limiter.allow(getIP(r)) {
+		writeError(w, http.StatusTooManyRequests, "rate limit exceeded")
+		return nil, nil, false
+	}
+
 	agentID := r.Header.Get("X-Agent-ID")
 	if agentID == "" {
 		writeError(w, http.StatusUnauthorized, "missing X-Agent-ID header")
