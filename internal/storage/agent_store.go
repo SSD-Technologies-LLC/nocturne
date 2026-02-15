@@ -430,6 +430,37 @@ func (d *DB) PruneExpiredKnowledge(now int64) (int, error) {
 	return int(n), nil
 }
 
+// CountRecentKnowledgeByOperator counts knowledge entries contributed by an operator since a given time.
+func (d *DB) CountRecentKnowledgeByOperator(operatorID string, since int64) (int, error) {
+	var count int
+	err := d.db.QueryRow(
+		`SELECT COUNT(*) FROM knowledge WHERE operator_id = ? AND created_at >= ?`,
+		operatorID, since,
+	).Scan(&count)
+	return count, err
+}
+
+// CountRecentVotesByOperator counts votes cast by an operator since a given time.
+func (d *DB) CountRecentVotesByOperator(operatorID string, since int64) (int, error) {
+	var count int
+	err := d.db.QueryRow(
+		`SELECT COUNT(*) FROM votes WHERE operator_id = ? AND committed_at >= ?`,
+		operatorID, since,
+	).Scan(&count)
+	return count, err
+}
+
+// HasUnclaimedTaskForDomain checks whether an uncompleted, unclaimed task of
+// the given type exists for a domain.
+func (d *DB) HasUnclaimedTaskForDomain(taskType, domain string) (bool, error) {
+	var count int
+	err := d.db.QueryRow(
+		`SELECT COUNT(*) FROM compute_tasks WHERE type = ? AND domain = ? AND completed = 0 AND claimed_by = ''`,
+		taskType, domain,
+	).Scan(&count)
+	return count > 0, err
+}
+
 // --- Compute Task CRUD ---
 
 // CreateComputeTask inserts a new compute task.
