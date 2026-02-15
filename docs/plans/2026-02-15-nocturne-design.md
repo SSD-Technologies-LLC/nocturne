@@ -12,12 +12,15 @@ Open-source project from SSD Technologies.
 
 ```
 nocturne/
-├── cmd/vault/main.go
+├── cmd/
+│   ├── nocturne/main.go        # Server binary
+│   └── nocturne-node/main.go   # Node binary (mesh network)
 ├── internal/
 │   ├── server/          # HTTP server, routes, middleware
 │   ├── crypto/          # AES-256-GCM, Noctis-256, KDF, recovery
 │   ├── storage/         # SQLite operations, models
-│   └── link/            # Link generation, mode logic
+│   ├── link/            # Link generation, mode logic
+│   └── mesh/            # Distributed network (tracker + node logic)
 ├── web/
 │   ├── dashboard/       # Main dashboard (HTML/JS/CSS)
 │   └── public/          # Public download page
@@ -138,10 +141,83 @@ Public:
 - Integration: upload → link → download → verify
 - Noctis-256 reference test vectors
 
+## Distributed Network (Nocturne Mesh)
+
+Users can turn any machine into a storage node in a shared encrypted network. Nodes store encrypted shards of other users' files — they cannot read them. Only the file owner (seed + password) can reassemble and decrypt.
+
+### How It Works
+
+1. **Shard creation:** When uploading to the mesh, the file is encrypted, then split into N shards using erasure coding (Reed-Solomon). Any K-of-N shards can reconstruct the file. Shards are distributed across available nodes.
+
+2. **Node script:** A single cross-platform Go binary (`nocturne-node`). Run it to join, run it again to leave. Stores shards in a local `~/.nocturne/shards/` directory. Communicates with the tracker (Nocturne server on Railway) via WebSocket.
+
+3. **Tracker:** The Nocturne server maintains a registry of active nodes and a shard map (which node holds which shard IDs). No file content or keys pass through the tracker — only metadata routing.
+
+4. **Retrieval:** Owner requests file → tracker returns shard locations → client fetches K shards from nodes → reassembles → decrypts with password.
+
+5. **Redundancy:** If a node goes offline, the tracker detects it and re-distributes its shards to remaining nodes (when enough nodes are online to supply the missing shards).
+
+### Node Script Behavior
+
+```
+nocturne-node connect    # Join the network, start storing/serving shards
+nocturne-node disconnect # Leave the network gracefully
+nocturne-node status     # Show node stats (shards stored, space used, uptime)
+```
+
+- Cross-platform: Linux (any distro), Windows, macOS
+- Zero config: connects to public tracker automatically
+- Storage limit configurable: `nocturne-node connect --max-storage 10GB`
+- Runs as a background process (daemonizes on connect, stops on disconnect)
+
+### Data Model Additions
+
+```sql
+-- Tracker: registered nodes
+CREATE TABLE nodes (
+    id          TEXT PRIMARY KEY,     -- Node UUID
+    public_key  BLOB NOT NULL,       -- Ed25519 public key for node auth
+    address     TEXT NOT NULL,        -- IP:port or domain
+    max_storage INTEGER NOT NULL,     -- Max bytes willing to store
+    used_storage INTEGER DEFAULT 0,
+    last_seen   INTEGER NOT NULL,     -- Unix timestamp
+    online      INTEGER DEFAULT 1
+);
+
+-- Tracker: shard → node mapping
+CREATE TABLE shards (
+    id          TEXT PRIMARY KEY,     -- Shard UUID
+    file_id     TEXT NOT NULL,        -- Owner's file ID
+    shard_index INTEGER NOT NULL,     -- Position in erasure coding sequence
+    node_id     TEXT NOT NULL,        -- Which node holds this shard
+    size        INTEGER NOT NULL,
+    checksum    TEXT NOT NULL,        -- SHA-256 of shard data
+    FOREIGN KEY (file_id) REFERENCES files(id),
+    FOREIGN KEY (node_id) REFERENCES nodes(id)
+);
+```
+
+### API Routes (Tracker)
+
+```
+Node communication:
+  WS   /ws/node                    → Node WebSocket (heartbeat, shard ops)
+  POST /api/mesh/upload             → Upload file to mesh (shard + distribute)
+  POST /api/mesh/download           → Request file from mesh (reassemble)
+  GET  /api/mesh/status             → Network stats (nodes online, total storage)
+```
+
+### Security
+
+- Nodes only store encrypted shards — opaque blobs with no metadata
+- Shard-to-file mapping only exists on the tracker
+- Node-to-tracker auth via Ed25519 keypair (generated on first connect)
+- Shard transfers between nodes use TLS
+- Even if tracker is compromised, files remain encrypted — attacker would need the password AND enough shards
+
 ## Excluded (v1)
 
-- No user accounts (single-user)
+- No user accounts (single-user dashboard)
 - No file versioning
-- No multi-server sync
-- No client-side encryption
+- No client-side encryption for dashboard mode (server does crypto)
 - No rate limiting
