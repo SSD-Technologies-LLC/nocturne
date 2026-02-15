@@ -2,9 +2,11 @@ package server
 
 import (
 	"encoding/json"
+	"io/fs"
 	"net/http"
 
 	"github.com/ssd-technologies/nocturne/internal/storage"
+	"github.com/ssd-technologies/nocturne/web"
 )
 
 // Server is the main HTTP server for the Nocturne API.
@@ -49,9 +51,26 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /api/recovery/setup", s.handleRecoverySetup)
 	s.mux.HandleFunc("POST /api/recovery/recover", s.handleRecoveryRecover)
 
-	// Public
+	// Public API
 	s.mux.HandleFunc("POST /s/{slug}/verify", s.handlePublicVerify)
 	s.mux.HandleFunc("POST /s/{slug}/download", s.handlePublicDownload)
+
+	// Static files — embedded frontend
+	dashboardFS, _ := fs.Sub(web.FS, "dashboard")
+	publicFS, _ := fs.Sub(web.FS, "public")
+
+	// Dashboard: serve index.html at root, plus its assets
+	s.mux.Handle("GET /styles.css", http.FileServerFS(dashboardFS))
+	s.mux.Handle("GET /app.js", http.FileServerFS(dashboardFS))
+	s.mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) {
+		http.ServeFileFS(w, r, dashboardFS, "index.html")
+	})
+
+	// Public download page: serve download.html for GET /s/{slug}
+	s.mux.Handle("GET /download.js", http.FileServerFS(publicFS))
+	s.mux.HandleFunc("GET /s/{slug}", func(w http.ResponseWriter, r *http.Request) {
+		http.ServeFileFS(w, r, publicFS, "download.html")
+	})
 }
 
 // handleHealth returns a simple health check response.
