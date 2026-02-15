@@ -18,23 +18,26 @@ type Config struct {
 	Alpha          int      // concurrency (default 3)
 	Port           int      // listen port (0 = random)
 	BootstrapPeers []string // initial peer addresses
+	StorePath      string   // SQLite path for local store (empty = :memory:)
 }
 
 // Node is a Kademlia DHT peer. It ties together a routing table, transport
-// layer, and message handling to implement the core Kademlia RPCs: PING and
-// FIND_NODE with iterative lookup.
+// layer, message handling, and local storage to implement the core Kademlia
+// RPCs: PING, FIND_NODE, STORE, and FIND_VALUE with iterative lookup.
 type Node struct {
 	id        NodeID
 	config    Config
 	table     *RoutingTable
 	transport *Transport
+	store     *LocalStore
 
 	// Pending RPC tracking: map message ID -> response channel.
 	mu      sync.Mutex
 	pending map[string]chan *Message
 }
 
-// NewNode creates a new DHT node with the given configuration.
+// NewNode creates a new DHT node with the given configuration. If
+// Config.StorePath is empty, an in-memory SQLite database is used.
 func NewNode(cfg Config) *Node {
 	id := NodeIDFromPublicKey(cfg.PublicKey)
 	if cfg.K == 0 {
@@ -44,11 +47,24 @@ func NewNode(cfg Config) *Node {
 		cfg.Alpha = 3
 	}
 
+	storePath := cfg.StorePath
+	if storePath == "" {
+		storePath = ":memory:"
+	}
+	store, err := NewLocalStore(storePath)
+	if err != nil {
+		// In-memory should never fail; if it does, panic is acceptable
+		// during initialization. For production paths the caller should
+		// pre-validate the path.
+		panic(fmt.Sprintf("dht: init local store: %v", err))
+	}
+
 	n := &Node{
 		id:        id,
 		config:    cfg,
 		table:     NewRoutingTable(id, cfg.K),
 		transport: NewTransport(id, cfg.PrivateKey),
+		store:     store,
 		pending:   make(map[string]chan *Message),
 	}
 	n.transport.OnMessage(n.handleMessage)
@@ -75,9 +91,213 @@ func (n *Node) Addr() string { return n.transport.Addr() }
 // Table returns the routing table (useful for testing and inspection).
 func (n *Node) Table() *RoutingTable { return n.table }
 
-// Close shuts down the node and its transport.
+// defaultStoreTTL is the time-to-live for entries stored via the STORE RPC.
+const defaultStoreTTL = 24 * time.Hour
+
+// Store stores a key-value pair in the DHT. It writes the entry to the local
+// store first, then replicates it to the k closest peers found via an
+// iterative lookup. Remote stores are best-effort and performed in parallel.
+func (n *Node) Store(key NodeID, value []byte) error {
+	// Store locally first.
+	if err := n.store.Put(key, value, defaultStoreTTL); err != nil {
+		return fmt.Errorf("local store: %w", err)
+	}
+
+	// Find the k closest peers to the key.
+	closest, err := n.FindNode(key)
+	if err != nil {
+		return nil // local store succeeded; remote replication is best-effort
+	}
+
+	// Send STORE RPCs in parallel (best-effort).
+	payload, err := json.Marshal(StorePayload{
+		Key:   key,
+		Value: json.RawMessage(value),
+	})
+	if err != nil {
+		return nil
+	}
+
+	var wg sync.WaitGroup
+	for _, peer := range closest {
+		if peer.ID == n.id {
+			continue
+		}
+		wg.Add(1)
+		go func(p PeerInfo) {
+			defer wg.Done()
+			n.storeRPC(p, payload)
+		}(peer)
+	}
+	wg.Wait()
+
+	return nil
+}
+
+// storeRPC sends a STORE RPC to a specific peer. It connects if needed.
+func (n *Node) storeRPC(peer PeerInfo, payload json.RawMessage) error {
+	// Ensure we're connected to this peer.
+	connected := false
+	for _, id := range n.transport.ConnectedPeers() {
+		if id == peer.ID {
+			connected = true
+			break
+		}
+	}
+	if !connected {
+		if err := n.transport.Connect(peer.Address, peer.ID); err != nil {
+			return fmt.Errorf("connect to %s: %w", peer.Address, err)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	msg := &Message{
+		Type:    MsgStore,
+		ID:      randomMsgID(),
+		Payload: payload,
+		Sender: SenderInfo{
+			NodeID:  n.id,
+			Address: n.Addr(),
+		},
+	}
+
+	_, err := n.sendRPC(peer.ID, msg, 5*time.Second)
+	return err
+}
+
+// FindValue looks up a value in the DHT by key. It checks the local store
+// first, then performs an iterative lookup using FIND_VALUE messages. Each
+// peer either returns the value (if it has it) or its closest known peers.
+// Returns (nil, nil) if the key is not found anywhere.
+func (n *Node) FindValue(key NodeID) ([]byte, error) {
+	// Check local store first.
+	value, found, err := n.store.Get(key)
+	if err != nil {
+		return nil, fmt.Errorf("local get: %w", err)
+	}
+	if found {
+		return value, nil
+	}
+
+	// Iterative lookup using FIND_VALUE messages.
+	shortlist := n.table.ClosestN(key, n.config.K)
+	if len(shortlist) == 0 {
+		return nil, nil
+	}
+
+	queried := make(map[NodeID]bool)
+	queried[n.id] = true
+	known := make(map[NodeID]PeerInfo)
+	for _, p := range shortlist {
+		known[p.ID] = p
+	}
+
+	for {
+		candidates := closestUnqueried(shortlist, key, queried, n.config.Alpha)
+		if len(candidates) == 0 {
+			break
+		}
+
+		type result struct {
+			value []byte
+			found bool
+			peers []PeerInfo
+			err   error
+		}
+		results := make([]result, len(candidates))
+		var wg sync.WaitGroup
+
+		for i, candidate := range candidates {
+			queried[candidate.ID] = true
+			wg.Add(1)
+			go func(idx int, peer PeerInfo) {
+				defer wg.Done()
+				val, fnd, peers, rpcErr := n.findValueRPC(peer, key)
+				results[idx] = result{value: val, found: fnd, peers: peers, err: rpcErr}
+			}(i, candidate)
+		}
+		wg.Wait()
+
+		// Check if any peer returned the value.
+		for _, r := range results {
+			if r.err != nil {
+				continue
+			}
+			if r.found {
+				return r.value, nil
+			}
+			// Merge returned peers into shortlist.
+			for _, p := range r.peers {
+				if p.ID == n.id {
+					continue
+				}
+				if _, exists := known[p.ID]; !exists {
+					known[p.ID] = p
+					shortlist = append(shortlist, p)
+					n.table.Add(p)
+				}
+			}
+		}
+	}
+
+	return nil, nil
+}
+
+// findValueRPC sends a FIND_VALUE RPC to a specific peer. It returns either
+// the value (if the peer has it) or the peer's closest known peers.
+func (n *Node) findValueRPC(peer PeerInfo, key NodeID) ([]byte, bool, []PeerInfo, error) {
+	// Ensure we're connected to this peer.
+	connected := false
+	for _, id := range n.transport.ConnectedPeers() {
+		if id == peer.ID {
+			connected = true
+			break
+		}
+	}
+	if !connected {
+		if err := n.transport.Connect(peer.Address, peer.ID); err != nil {
+			return nil, false, nil, fmt.Errorf("connect to %s: %w", peer.Address, err)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	payload, err := json.Marshal(FindValuePayload{Key: key})
+	if err != nil {
+		return nil, false, nil, err
+	}
+
+	msg := &Message{
+		Type:    MsgFindValue,
+		ID:      randomMsgID(),
+		Payload: payload,
+		Sender: SenderInfo{
+			NodeID:  n.id,
+			Address: n.Addr(),
+		},
+	}
+
+	resp, err := n.sendRPC(peer.ID, msg, 5*time.Second)
+	if err != nil {
+		return nil, false, nil, err
+	}
+
+	var fvr FindValueResponse
+	if err := json.Unmarshal(resp.Payload, &fvr); err != nil {
+		return nil, false, nil, fmt.Errorf("unmarshal FindValueResponse: %w", err)
+	}
+
+	if fvr.Found {
+		return fvr.Value, true, nil, nil
+	}
+	return nil, false, fvr.Peers, nil
+}
+
+// Close shuts down the node, its transport, and the local store.
 func (n *Node) Close() error {
 	n.transport.Close()
+	if n.store != nil {
+		return n.store.Close()
+	}
 	return nil
 }
 
@@ -302,6 +522,48 @@ func (n *Node) handleMessage(msg *Message, from NodeID) {
 			return
 		}
 		n.sendResponse(from, msg.ID, MsgResponse, resp)
+
+	case MsgStore:
+		// Store the key-value pair locally.
+		var payload StorePayload
+		if err := json.Unmarshal(msg.Payload, &payload); err != nil {
+			return
+		}
+		storeErr := n.store.Put(payload.Key, payload.Value, defaultStoreTTL)
+		resp, err := json.Marshal(StoreResponse{Stored: storeErr == nil})
+		if err != nil {
+			return
+		}
+		n.sendResponse(from, msg.ID, MsgResponse, resp)
+
+	case MsgFindValue:
+		// Check local store for the requested key.
+		var payload FindValuePayload
+		if err := json.Unmarshal(msg.Payload, &payload); err != nil {
+			return
+		}
+		value, found, _ := n.store.Get(payload.Key)
+		if found {
+			resp, err := json.Marshal(FindValueResponse{
+				Found: true,
+				Value: json.RawMessage(value),
+			})
+			if err != nil {
+				return
+			}
+			n.sendResponse(from, msg.ID, MsgResponse, resp)
+		} else {
+			// Return closest peers instead.
+			closest := n.table.ClosestN(payload.Key, n.config.K)
+			resp, err := json.Marshal(FindValueResponse{
+				Found: false,
+				Peers: closest,
+			})
+			if err != nil {
+				return
+			}
+			n.sendResponse(from, msg.ID, MsgResponse, resp)
+		}
 
 	case MsgResponse:
 		// Deliver to any waiting RPC caller.
