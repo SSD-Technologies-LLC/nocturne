@@ -44,6 +44,10 @@ func (d *DB) Close() error {
 }
 
 // migrate creates all required tables if they do not already exist.
+//
+// Deprecated: Agent tables (operators, agent_keys, knowledge, compute_tasks,
+// votes, provenance, awareness, anomaly_logs) are superseded by the distributed
+// DHT layer. These tables remain for backward compatibility with centralized mode.
 func (d *DB) migrate() error {
 	schema := `
 CREATE TABLE IF NOT EXISTS recovery_keys (
