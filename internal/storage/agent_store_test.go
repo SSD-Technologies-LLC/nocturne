@@ -8,6 +8,24 @@ import (
 
 // --- Test helpers ---
 
+// seedAgentKey seeds an operator and agent key, returning both.
+func seedAgentKey(t *testing.T, db *DB) (*Operator, *AgentKey) {
+	t.Helper()
+	op := seedOperator(t, db)
+	ak := &AgentKey{
+		ID:         "ak-001",
+		OperatorID: op.ID,
+		PublicKey:  []byte("agent-pub-key"),
+		Label:      "Test Agent",
+		LastSeen:   time.Now().Unix(),
+		CreatedAt:  time.Now().Unix(),
+	}
+	if err := db.CreateAgentKey(ak); err != nil {
+		t.Fatalf("seedAgentKey: %v", err)
+	}
+	return op, ak
+}
+
 // seedOperator creates and returns a test operator.
 func seedOperator(t *testing.T, db *DB) *Operator {
 	t.Helper()
@@ -355,5 +373,252 @@ func TestDeleteAgentKey(t *testing.T) {
 	_, err := db.GetAgentKey(ak.ID)
 	if err == nil {
 		t.Fatal("expected error after delete, got nil")
+	}
+}
+
+// --- Task 5: Knowledge CRUD tests ---
+
+func TestCreateAndQueryKnowledge(t *testing.T) {
+	db := testDB(t)
+	_, ak := seedAgentKey(t, db)
+
+	entry := &KnowledgeEntry{
+		ID:         "k-001",
+		AgentID:    ak.ID,
+		OperatorID: ak.OperatorID,
+		Type:       KnowledgeObservation,
+		Domain:     "security",
+		Content:    "TLS 1.3 is recommended for all connections",
+		Confidence: 0.9,
+		CreatedAt:  time.Now().Unix(),
+		Signature:  "sig-001",
+	}
+	if err := db.CreateKnowledgeEntry(entry); err != nil {
+		t.Fatalf("CreateKnowledgeEntry: %v", err)
+	}
+
+	results, err := db.QueryKnowledge("security", "", nil, 0, 10)
+	if err != nil {
+		t.Fatalf("QueryKnowledge: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("len = %d, want 1", len(results))
+	}
+	if results[0].ID != entry.ID {
+		t.Errorf("ID = %q, want %q", results[0].ID, entry.ID)
+	}
+	if results[0].Content != entry.Content {
+		t.Errorf("Content mismatch")
+	}
+}
+
+func TestQueryKnowledgeByText(t *testing.T) {
+	db := testDB(t)
+	_, ak := seedAgentKey(t, db)
+
+	entries := []*KnowledgeEntry{
+		{
+			ID: "k-text-1", AgentID: ak.ID, OperatorID: ak.OperatorID,
+			Type: KnowledgeObservation, Domain: "networking",
+			Content: "TCP uses three-way handshake", Confidence: 0.8,
+			CreatedAt: time.Now().Unix(), Signature: "sig-t1",
+		},
+		{
+			ID: "k-text-2", AgentID: ak.ID, OperatorID: ak.OperatorID,
+			Type: KnowledgeObservation, Domain: "crypto",
+			Content: "AES-256 uses 14 rounds of encryption", Confidence: 0.85,
+			CreatedAt: time.Now().Unix(), Signature: "sig-t2",
+		},
+	}
+	for _, e := range entries {
+		if err := db.CreateKnowledgeEntry(e); err != nil {
+			t.Fatalf("CreateKnowledgeEntry(%s): %v", e.ID, err)
+		}
+	}
+
+	// Query by text — only the TCP entry should match.
+	results, err := db.QueryKnowledge("", "handshake", nil, 0, 10)
+	if err != nil {
+		t.Fatalf("QueryKnowledge: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("len = %d, want 1", len(results))
+	}
+	if results[0].ID != "k-text-1" {
+		t.Errorf("ID = %q, want k-text-1", results[0].ID)
+	}
+}
+
+func TestQueryKnowledgeMinConfidence(t *testing.T) {
+	db := testDB(t)
+	_, ak := seedAgentKey(t, db)
+
+	entries := []*KnowledgeEntry{
+		{
+			ID: "k-low", AgentID: ak.ID, OperatorID: ak.OperatorID,
+			Type: KnowledgeObservation, Domain: "general",
+			Content: "Low confidence entry", Confidence: 0.3,
+			CreatedAt: time.Now().Unix(), Signature: "sig-low",
+		},
+		{
+			ID: "k-high", AgentID: ak.ID, OperatorID: ak.OperatorID,
+			Type: KnowledgeObservation, Domain: "general",
+			Content: "High confidence entry", Confidence: 0.9,
+			CreatedAt: time.Now().Unix(), Signature: "sig-high",
+		},
+	}
+	for _, e := range entries {
+		if err := db.CreateKnowledgeEntry(e); err != nil {
+			t.Fatalf("CreateKnowledgeEntry(%s): %v", e.ID, err)
+		}
+	}
+
+	results, err := db.QueryKnowledge("", "", nil, 0.5, 10)
+	if err != nil {
+		t.Fatalf("QueryKnowledge: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("len = %d, want 1", len(results))
+	}
+	if results[0].ID != "k-high" {
+		t.Errorf("ID = %q, want k-high", results[0].ID)
+	}
+}
+
+func TestDeleteKnowledgeEntry(t *testing.T) {
+	db := testDB(t)
+	_, ak := seedAgentKey(t, db)
+
+	entry := &KnowledgeEntry{
+		ID: "k-del", AgentID: ak.ID, OperatorID: ak.OperatorID,
+		Type: KnowledgeObservation, Domain: "test",
+		Content: "To be deleted", Confidence: 0.5,
+		CreatedAt: time.Now().Unix(), Signature: "sig-del",
+	}
+	if err := db.CreateKnowledgeEntry(entry); err != nil {
+		t.Fatalf("CreateKnowledgeEntry: %v", err)
+	}
+
+	if err := db.DeleteKnowledgeEntry(entry.ID, ak.ID); err != nil {
+		t.Fatalf("DeleteKnowledgeEntry: %v", err)
+	}
+
+	_, err := db.GetKnowledgeEntry(entry.ID)
+	if err == nil {
+		t.Fatal("expected error after delete, got nil")
+	}
+}
+
+func TestUpdateKnowledgeVotes(t *testing.T) {
+	db := testDB(t)
+	_, ak := seedAgentKey(t, db)
+
+	entry := &KnowledgeEntry{
+		ID: "k-votes", AgentID: ak.ID, OperatorID: ak.OperatorID,
+		Type: KnowledgeObservation, Domain: "test",
+		Content: "Votable entry", Confidence: 0.7,
+		CreatedAt: time.Now().Unix(), Signature: "sig-votes",
+	}
+	if err := db.CreateKnowledgeEntry(entry); err != nil {
+		t.Fatalf("CreateKnowledgeEntry: %v", err)
+	}
+
+	if err := db.UpdateKnowledgeVotes(entry.ID, 10, 3); err != nil {
+		t.Fatalf("UpdateKnowledgeVotes: %v", err)
+	}
+
+	got, err := db.GetKnowledgeEntry(entry.ID)
+	if err != nil {
+		t.Fatalf("GetKnowledgeEntry: %v", err)
+	}
+	if got.VotesUp != 10 {
+		t.Errorf("VotesUp = %d, want 10", got.VotesUp)
+	}
+	if got.VotesDown != 3 {
+		t.Errorf("VotesDown = %d, want 3", got.VotesDown)
+	}
+}
+
+func TestListKnowledgeDomains(t *testing.T) {
+	db := testDB(t)
+	_, ak := seedAgentKey(t, db)
+
+	entries := []*KnowledgeEntry{
+		{
+			ID: "k-d1a", AgentID: ak.ID, OperatorID: ak.OperatorID,
+			Type: KnowledgeObservation, Domain: "security",
+			Content: "Entry 1a", Confidence: 0.8,
+			CreatedAt: time.Now().Unix(), Signature: "sig-d1a",
+		},
+		{
+			ID: "k-d1b", AgentID: ak.ID, OperatorID: ak.OperatorID,
+			Type: KnowledgeObservation, Domain: "security",
+			Content: "Entry 1b", Confidence: 0.6,
+			CreatedAt: time.Now().Unix(), Signature: "sig-d1b",
+		},
+		{
+			ID: "k-d2", AgentID: ak.ID, OperatorID: ak.OperatorID,
+			Type: KnowledgeObservation, Domain: "networking",
+			Content: "Entry 2", Confidence: 0.9,
+			CreatedAt: time.Now().Unix(), Signature: "sig-d2",
+		},
+		{
+			ID: "k-d3", AgentID: ak.ID, OperatorID: ak.OperatorID,
+			Type: KnowledgeObservation, Domain: "crypto",
+			Content: "Entry 3", Confidence: 0.7,
+			CreatedAt: time.Now().Unix(), Signature: "sig-d3",
+		},
+	}
+	for _, e := range entries {
+		if err := db.CreateKnowledgeEntry(e); err != nil {
+			t.Fatalf("CreateKnowledgeEntry(%s): %v", e.ID, err)
+		}
+	}
+
+	domains, err := db.ListKnowledgeDomains()
+	if err != nil {
+		t.Fatalf("ListKnowledgeDomains: %v", err)
+	}
+	if len(domains) != 3 {
+		t.Fatalf("len = %d, want 3", len(domains))
+	}
+
+	// First domain should be "security" (count=2).
+	if domains[0].Domain != "security" {
+		t.Errorf("domains[0].Domain = %q, want security", domains[0].Domain)
+	}
+	if domains[0].Count != 2 {
+		t.Errorf("domains[0].Count = %d, want 2", domains[0].Count)
+	}
+}
+
+func TestPruneExpiredKnowledge(t *testing.T) {
+	db := testDB(t)
+	_, ak := seedAgentKey(t, db)
+
+	ttl := int64(100)
+	entry := &KnowledgeEntry{
+		ID: "k-expire", AgentID: ak.ID, OperatorID: ak.OperatorID,
+		Type: KnowledgeObservation, Domain: "test",
+		Content: "Expiring entry", Confidence: 0.5,
+		TTL: &ttl, CreatedAt: 1000,
+		Signature: "sig-expire",
+	}
+	if err := db.CreateKnowledgeEntry(entry); err != nil {
+		t.Fatalf("CreateKnowledgeEntry: %v", err)
+	}
+
+	// Prune with now = 1200 (1000 + 100 < 1200), should delete.
+	n, err := db.PruneExpiredKnowledge(1200)
+	if err != nil {
+		t.Fatalf("PruneExpiredKnowledge: %v", err)
+	}
+	if n != 1 {
+		t.Errorf("pruned = %d, want 1", n)
+	}
+
+	_, err = db.GetKnowledgeEntry(entry.ID)
+	if err == nil {
+		t.Fatal("expected error after prune, got nil")
 	}
 }

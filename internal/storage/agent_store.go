@@ -3,7 +3,15 @@ package storage
 import (
 	"database/sql"
 	"fmt"
+	"strings"
 )
+
+// DomainInfo summarises a knowledge domain.
+type DomainInfo struct {
+	Domain        string  `json:"domain"`
+	Count         int     `json:"count"`
+	AvgConfidence float64 `json:"avg_confidence"`
+}
 
 // --- Operator CRUD ---
 
@@ -253,4 +261,170 @@ func (d *DB) DeleteAgentKey(id string) error {
 		return fmt.Errorf("delete agent key: %w", sql.ErrNoRows)
 	}
 	return nil
+}
+
+// --- Knowledge CRUD ---
+
+// CreateKnowledgeEntry inserts a new knowledge entry.
+func (d *DB) CreateKnowledgeEntry(entry *KnowledgeEntry) error {
+	var ttl sql.NullInt64
+	if entry.TTL != nil {
+		ttl = sql.NullInt64{Int64: *entry.TTL, Valid: true}
+	}
+	_, err := d.db.Exec(
+		`INSERT INTO knowledge (id, agent_id, operator_id, type, domain, content, confidence,
+		 sources, supersedes, votes_up, votes_down, verified_by, ttl, created_at, signature)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		entry.ID, entry.AgentID, entry.OperatorID, entry.Type, entry.Domain,
+		entry.Content, entry.Confidence, entry.Sources, entry.Supersedes,
+		entry.VotesUp, entry.VotesDown, entry.VerifiedBy, ttl,
+		entry.CreatedAt, entry.Signature,
+	)
+	if err != nil {
+		return fmt.Errorf("create knowledge entry: %w", err)
+	}
+	return nil
+}
+
+// GetKnowledgeEntry retrieves a knowledge entry by ID.
+func (d *DB) GetKnowledgeEntry(id string) (*KnowledgeEntry, error) {
+	e := &KnowledgeEntry{}
+	var ttl sql.NullInt64
+	err := d.db.QueryRow(
+		`SELECT id, agent_id, operator_id, type, domain, content, confidence,
+		 sources, supersedes, votes_up, votes_down, verified_by, ttl, created_at, signature
+		 FROM knowledge WHERE id = ?`, id,
+	).Scan(&e.ID, &e.AgentID, &e.OperatorID, &e.Type, &e.Domain,
+		&e.Content, &e.Confidence, &e.Sources, &e.Supersedes,
+		&e.VotesUp, &e.VotesDown, &e.VerifiedBy, &ttl,
+		&e.CreatedAt, &e.Signature)
+	if err != nil {
+		return nil, fmt.Errorf("get knowledge entry: %w", err)
+	}
+	if ttl.Valid {
+		e.TTL = &ttl.Int64
+	}
+	return e, nil
+}
+
+// QueryKnowledge searches knowledge entries with optional filters.
+func (d *DB) QueryKnowledge(domain, query string, tags []string, minConfidence float64, limit int) ([]KnowledgeEntry, error) {
+	where := []string{"1=1"}
+	args := []interface{}{}
+
+	if domain != "" {
+		where = append(where, "domain LIKE ?")
+		args = append(args, domain+"%")
+	}
+	if query != "" {
+		where = append(where, "content LIKE ?")
+		args = append(args, "%"+query+"%")
+	}
+	if minConfidence > 0 {
+		where = append(where, "confidence >= ?")
+		args = append(args, minConfidence)
+	}
+
+	q := fmt.Sprintf(
+		`SELECT id, agent_id, operator_id, type, domain, content, confidence,
+		 sources, supersedes, votes_up, votes_down, verified_by, ttl, created_at, signature
+		 FROM knowledge WHERE %s ORDER BY confidence DESC, created_at DESC LIMIT ?`,
+		strings.Join(where, " AND "),
+	)
+	args = append(args, limit)
+
+	rows, err := d.db.Query(q, args...)
+	if err != nil {
+		return nil, fmt.Errorf("query knowledge: %w", err)
+	}
+	defer rows.Close()
+
+	var entries []KnowledgeEntry
+	for rows.Next() {
+		var e KnowledgeEntry
+		var ttl sql.NullInt64
+		if err := rows.Scan(&e.ID, &e.AgentID, &e.OperatorID, &e.Type, &e.Domain,
+			&e.Content, &e.Confidence, &e.Sources, &e.Supersedes,
+			&e.VotesUp, &e.VotesDown, &e.VerifiedBy, &ttl,
+			&e.CreatedAt, &e.Signature); err != nil {
+			return nil, fmt.Errorf("scan knowledge entry: %w", err)
+		}
+		if ttl.Valid {
+			e.TTL = &ttl.Int64
+		}
+		entries = append(entries, e)
+	}
+	return entries, rows.Err()
+}
+
+// DeleteKnowledgeEntry removes a knowledge entry only if it belongs to the given agent.
+func (d *DB) DeleteKnowledgeEntry(id, agentID string) error {
+	res, err := d.db.Exec(`DELETE FROM knowledge WHERE id = ? AND agent_id = ?`, id, agentID)
+	if err != nil {
+		return fmt.Errorf("delete knowledge entry: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("delete knowledge entry rows affected: %w", err)
+	}
+	if n == 0 {
+		return fmt.Errorf("delete knowledge entry: %w", sql.ErrNoRows)
+	}
+	return nil
+}
+
+// UpdateKnowledgeVotes sets the vote counts for a knowledge entry.
+func (d *DB) UpdateKnowledgeVotes(id string, up, down int) error {
+	res, err := d.db.Exec(
+		`UPDATE knowledge SET votes_up = ?, votes_down = ? WHERE id = ?`,
+		up, down, id,
+	)
+	if err != nil {
+		return fmt.Errorf("update knowledge votes: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("update knowledge votes rows affected: %w", err)
+	}
+	if n == 0 {
+		return fmt.Errorf("update knowledge votes: %w", sql.ErrNoRows)
+	}
+	return nil
+}
+
+// ListKnowledgeDomains returns distinct domains with entry count and average confidence.
+func (d *DB) ListKnowledgeDomains() ([]DomainInfo, error) {
+	rows, err := d.db.Query(
+		`SELECT domain, COUNT(*) as count, AVG(confidence) as avg_confidence
+		 FROM knowledge GROUP BY domain ORDER BY count DESC`,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list knowledge domains: %w", err)
+	}
+	defer rows.Close()
+
+	var domains []DomainInfo
+	for rows.Next() {
+		var di DomainInfo
+		if err := rows.Scan(&di.Domain, &di.Count, &di.AvgConfidence); err != nil {
+			return nil, fmt.Errorf("scan domain info: %w", err)
+		}
+		domains = append(domains, di)
+	}
+	return domains, rows.Err()
+}
+
+// PruneExpiredKnowledge deletes entries whose TTL has elapsed relative to now.
+func (d *DB) PruneExpiredKnowledge(now int64) (int, error) {
+	res, err := d.db.Exec(
+		`DELETE FROM knowledge WHERE ttl IS NOT NULL AND (created_at + ttl) < ?`, now,
+	)
+	if err != nil {
+		return 0, fmt.Errorf("prune expired knowledge: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("prune expired knowledge rows affected: %w", err)
+	}
+	return int(n), nil
 }
