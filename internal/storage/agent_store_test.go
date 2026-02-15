@@ -8,24 +8,6 @@ import (
 
 // --- Test helpers ---
 
-// seedAgentKey seeds an operator and agent key, returning both.
-func seedAgentKey(t *testing.T, db *DB) (*Operator, *AgentKey) {
-	t.Helper()
-	op := seedOperator(t, db)
-	ak := &AgentKey{
-		ID:         "ak-001",
-		OperatorID: op.ID,
-		PublicKey:  []byte("agent-pub-key"),
-		Label:      "Test Agent",
-		LastSeen:   time.Now().Unix(),
-		CreatedAt:  time.Now().Unix(),
-	}
-	if err := db.CreateAgentKey(ak); err != nil {
-		t.Fatalf("seedAgentKey: %v", err)
-	}
-	return op, ak
-}
-
 // seedOperator creates and returns a test operator.
 func seedOperator(t *testing.T, db *DB) *Operator {
 	t.Helper()
@@ -43,6 +25,24 @@ func seedOperator(t *testing.T, db *DB) *Operator {
 		t.Fatalf("seedOperator: %v", err)
 	}
 	return op
+}
+
+// seedAgentKey seeds an operator and agent key, returning both.
+func seedAgentKey(t *testing.T, db *DB) (*Operator, *AgentKey) {
+	t.Helper()
+	op := seedOperator(t, db)
+	ak := &AgentKey{
+		ID:         "ak-001",
+		OperatorID: op.ID,
+		PublicKey:  []byte("agent-pub-key"),
+		Label:      "Test Agent",
+		LastSeen:   time.Now().Unix(),
+		CreatedAt:  time.Now().Unix(),
+	}
+	if err := db.CreateAgentKey(ak); err != nil {
+		t.Fatalf("seedAgentKey: %v", err)
+	}
+	return op, ak
 }
 
 // --- Task 3: Operator CRUD tests ---
@@ -198,19 +198,7 @@ func TestDeleteOperator(t *testing.T) {
 
 func TestCreateAndGetAgentKey(t *testing.T) {
 	db := testDB(t)
-	op := seedOperator(t, db)
-
-	ak := &AgentKey{
-		ID:         "ak-001",
-		OperatorID: op.ID,
-		PublicKey:  []byte("agent-pub-key"),
-		Label:      "Test Agent",
-		LastSeen:   time.Now().Unix(),
-		CreatedAt:  time.Now().Unix(),
-	}
-	if err := db.CreateAgentKey(ak); err != nil {
-		t.Fatalf("CreateAgentKey: %v", err)
-	}
+	op, ak := seedAgentKey(t, db)
 
 	got, err := db.GetAgentKey(ak.ID)
 	if err != nil {
@@ -232,19 +220,7 @@ func TestCreateAndGetAgentKey(t *testing.T) {
 
 func TestGetAgentKeyByPublicKey(t *testing.T) {
 	db := testDB(t)
-	op := seedOperator(t, db)
-
-	ak := &AgentKey{
-		ID:         "ak-001",
-		OperatorID: op.ID,
-		PublicKey:  []byte("agent-pub-key"),
-		Label:      "Test Agent",
-		LastSeen:   time.Now().Unix(),
-		CreatedAt:  time.Now().Unix(),
-	}
-	if err := db.CreateAgentKey(ak); err != nil {
-		t.Fatalf("CreateAgentKey: %v", err)
-	}
+	_, ak := seedAgentKey(t, db)
 
 	got, err := db.GetAgentKeyByPublicKey(ak.PublicKey)
 	if err != nil {
@@ -323,19 +299,7 @@ func TestAgentCountEnforced(t *testing.T) {
 
 func TestUpdateAgentLastSeen(t *testing.T) {
 	db := testDB(t)
-	op := seedOperator(t, db)
-
-	ak := &AgentKey{
-		ID:         "ak-001",
-		OperatorID: op.ID,
-		PublicKey:  []byte("agent-pub-key"),
-		Label:      "Test Agent",
-		LastSeen:   time.Now().Unix(),
-		CreatedAt:  time.Now().Unix(),
-	}
-	if err := db.CreateAgentKey(ak); err != nil {
-		t.Fatalf("CreateAgentKey: %v", err)
-	}
+	_, ak := seedAgentKey(t, db)
 
 	newTime := time.Now().Add(time.Hour).Unix()
 	if err := db.UpdateAgentLastSeen(ak.ID, newTime); err != nil {
@@ -353,18 +317,7 @@ func TestUpdateAgentLastSeen(t *testing.T) {
 
 func TestDeleteAgentKey(t *testing.T) {
 	db := testDB(t)
-	op := seedOperator(t, db)
-
-	ak := &AgentKey{
-		ID:         "ak-001",
-		OperatorID: op.ID,
-		PublicKey:  []byte("agent-pub-key"),
-		Label:      "Test Agent",
-		CreatedAt:  time.Now().Unix(),
-	}
-	if err := db.CreateAgentKey(ak); err != nil {
-		t.Fatalf("CreateAgentKey: %v", err)
-	}
+	_, ak := seedAgentKey(t, db)
 
 	if err := db.DeleteAgentKey(ak.ID); err != nil {
 		t.Fatalf("DeleteAgentKey: %v", err)
@@ -620,5 +573,361 @@ func TestPruneExpiredKnowledge(t *testing.T) {
 	_, err = db.GetKnowledgeEntry(entry.ID)
 	if err == nil {
 		t.Fatal("expected error after prune, got nil")
+	}
+}
+
+// --- Task 6: Compute Task, Vote, Provenance, Awareness, Anomaly Log tests ---
+
+func TestCreateAndClaimComputeTask(t *testing.T) {
+	db := testDB(t)
+
+	task := &ComputeTask{
+		ID:          "ct-001",
+		Type:        TaskSynthesize,
+		Domain:      "security",
+		Description: "Synthesize security observations",
+		Priority:    7,
+		CreatedAt:   time.Now().Unix(),
+	}
+	if err := db.CreateComputeTask(task); err != nil {
+		t.Fatalf("CreateComputeTask: %v", err)
+	}
+
+	claimed, err := db.ClaimComputeTask([]string{TaskSynthesize}, []string{"security"}, "agent-1")
+	if err != nil {
+		t.Fatalf("ClaimComputeTask: %v", err)
+	}
+	if claimed == nil {
+		t.Fatal("ClaimComputeTask returned nil, expected task")
+	}
+	if claimed.ClaimedBy != "agent-1" {
+		t.Errorf("ClaimedBy = %q, want agent-1", claimed.ClaimedBy)
+	}
+	if claimed.ClaimedAt == 0 {
+		t.Error("ClaimedAt = 0, expected non-zero")
+	}
+}
+
+func TestClaimComputeTaskNoneAvailable(t *testing.T) {
+	db := testDB(t)
+
+	claimed, err := db.ClaimComputeTask([]string{TaskVerify}, []string{"any"}, "agent-1")
+	if err != nil {
+		t.Fatalf("ClaimComputeTask: %v", err)
+	}
+	if claimed != nil {
+		t.Fatalf("expected nil, got task %q", claimed.ID)
+	}
+}
+
+func TestCompleteComputeTask(t *testing.T) {
+	db := testDB(t)
+
+	task := &ComputeTask{
+		ID:          "ct-complete",
+		Type:        TaskVerify,
+		Domain:      "crypto",
+		Description: "Verify crypto knowledge",
+		Priority:    5,
+		CreatedAt:   time.Now().Unix(),
+	}
+	if err := db.CreateComputeTask(task); err != nil {
+		t.Fatalf("CreateComputeTask: %v", err)
+	}
+
+	// Claim it.
+	claimed, err := db.ClaimComputeTask([]string{TaskVerify}, []string{"crypto"}, "agent-2")
+	if err != nil {
+		t.Fatalf("ClaimComputeTask: %v", err)
+	}
+	if claimed == nil {
+		t.Fatal("ClaimComputeTask returned nil")
+	}
+
+	// Complete it.
+	if err := db.CompleteComputeTask(claimed.ID, "result-42"); err != nil {
+		t.Fatalf("CompleteComputeTask: %v", err)
+	}
+
+	got, err := db.GetComputeTask(claimed.ID)
+	if err != nil {
+		t.Fatalf("GetComputeTask: %v", err)
+	}
+	if !got.Completed {
+		t.Error("Completed = false, want true")
+	}
+	if got.ResultID != "result-42" {
+		t.Errorf("ResultID = %q, want result-42", got.ResultID)
+	}
+}
+
+func TestCommitRevealVote(t *testing.T) {
+	db := testDB(t)
+
+	v := &Vote{
+		ID:          "vote-001",
+		EntryID:     "entry-001",
+		OperatorID:  "op-001",
+		Commitment:  "hash-of-vote",
+		Phase:       VotePhaseCommit,
+		CommittedAt: time.Now().Unix(),
+	}
+	if err := db.CreateVote(v); err != nil {
+		t.Fatalf("CreateVote: %v", err)
+	}
+
+	// Verify commit phase.
+	got, err := db.GetVote(v.ID)
+	if err != nil {
+		t.Fatalf("GetVote: %v", err)
+	}
+	if got.Phase != VotePhaseCommit {
+		t.Errorf("Phase = %q, want commit", got.Phase)
+	}
+
+	// Reveal.
+	voteVal := 1
+	if err := db.RevealVote(v.ID, &voteVal, "nonce-123", "I agree because data supports it"); err != nil {
+		t.Fatalf("RevealVote: %v", err)
+	}
+
+	got, err = db.GetVote(v.ID)
+	if err != nil {
+		t.Fatalf("GetVote after reveal: %v", err)
+	}
+	if got.Phase != VotePhaseRevealed {
+		t.Errorf("Phase = %q, want revealed", got.Phase)
+	}
+	if got.VoteValue == nil {
+		t.Fatal("VoteValue is nil after reveal")
+	}
+	if *got.VoteValue != 1 {
+		t.Errorf("VoteValue = %d, want 1", *got.VoteValue)
+	}
+	if got.Nonce != "nonce-123" {
+		t.Errorf("Nonce = %q, want nonce-123", got.Nonce)
+	}
+	if got.Reason != "I agree because data supports it" {
+		t.Errorf("Reason mismatch")
+	}
+	if got.RevealedAt == 0 {
+		t.Error("RevealedAt = 0, expected non-zero")
+	}
+}
+
+func TestDuplicateVoteBlocked(t *testing.T) {
+	db := testDB(t)
+
+	v := &Vote{
+		ID:          "vote-dup-1",
+		EntryID:     "entry-dup",
+		OperatorID:  "op-dup",
+		Commitment:  "commitment-1",
+		Phase:       VotePhaseCommit,
+		CommittedAt: time.Now().Unix(),
+	}
+	if err := db.CreateVote(v); err != nil {
+		t.Fatalf("CreateVote: %v", err)
+	}
+
+	// Duplicate with same entry_id + operator_id should fail.
+	v2 := &Vote{
+		ID:          "vote-dup-2",
+		EntryID:     "entry-dup",
+		OperatorID:  "op-dup",
+		Commitment:  "commitment-2",
+		Phase:       VotePhaseCommit,
+		CommittedAt: time.Now().Unix(),
+	}
+	err := db.CreateVote(v2)
+	if err == nil {
+		t.Fatal("expected UNIQUE constraint error for duplicate vote, got nil")
+	}
+}
+
+func TestGetVotesForEntry(t *testing.T) {
+	db := testDB(t)
+
+	for i := 0; i < 3; i++ {
+		v := &Vote{
+			ID:          fmt.Sprintf("vote-list-%d", i),
+			EntryID:     "entry-list",
+			OperatorID:  fmt.Sprintf("op-%d", i),
+			Commitment:  fmt.Sprintf("commit-%d", i),
+			Phase:       VotePhaseCommit,
+			CommittedAt: time.Now().Unix(),
+		}
+		if err := db.CreateVote(v); err != nil {
+			t.Fatalf("CreateVote[%d]: %v", i, err)
+		}
+	}
+
+	votes, err := db.GetVotesForEntry("entry-list")
+	if err != nil {
+		t.Fatalf("GetVotesForEntry: %v", err)
+	}
+	if len(votes) != 3 {
+		t.Fatalf("len = %d, want 3", len(votes))
+	}
+}
+
+func TestProvenanceChain(t *testing.T) {
+	db := testDB(t)
+
+	if err := db.CreateProvenance("entry-A", "source-1"); err != nil {
+		t.Fatalf("CreateProvenance(1): %v", err)
+	}
+	if err := db.CreateProvenance("entry-A", "source-2"); err != nil {
+		t.Fatalf("CreateProvenance(2): %v", err)
+	}
+
+	sources, err := db.GetProvenance("entry-A")
+	if err != nil {
+		t.Fatalf("GetProvenance: %v", err)
+	}
+	if len(sources) != 2 {
+		t.Fatalf("len = %d, want 2", len(sources))
+	}
+
+	// Verify both sources are present.
+	found := map[string]bool{}
+	for _, s := range sources {
+		found[s] = true
+	}
+	if !found["source-1"] || !found["source-2"] {
+		t.Errorf("sources = %v, want [source-1, source-2]", sources)
+	}
+}
+
+func TestProvenanceIdempotent(t *testing.T) {
+	db := testDB(t)
+
+	// INSERT OR IGNORE should not error on duplicate.
+	if err := db.CreateProvenance("entry-B", "source-1"); err != nil {
+		t.Fatalf("CreateProvenance(1): %v", err)
+	}
+	if err := db.CreateProvenance("entry-B", "source-1"); err != nil {
+		t.Fatalf("CreateProvenance(duplicate): %v", err)
+	}
+
+	sources, err := db.GetProvenance("entry-B")
+	if err != nil {
+		t.Fatalf("GetProvenance: %v", err)
+	}
+	if len(sources) != 1 {
+		t.Fatalf("len = %d, want 1 (duplicate should be ignored)", len(sources))
+	}
+}
+
+func TestAwarenessSnapshot(t *testing.T) {
+	db := testDB(t)
+
+	snap := &AwarenessSnapshot{
+		ID:          "aware-001",
+		Snapshot:    `{"domains":["security","crypto"],"total_entries":42}`,
+		GeneratedBy: "agent-001",
+		CreatedAt:   time.Now().Unix(),
+	}
+	if err := db.CreateAwarenessSnapshot(snap); err != nil {
+		t.Fatalf("CreateAwarenessSnapshot: %v", err)
+	}
+
+	got, err := db.GetLatestAwareness()
+	if err != nil {
+		t.Fatalf("GetLatestAwareness: %v", err)
+	}
+	if got.ID != snap.ID {
+		t.Errorf("ID = %q, want %q", got.ID, snap.ID)
+	}
+	if got.Snapshot != snap.Snapshot {
+		t.Errorf("Snapshot mismatch")
+	}
+	if got.GeneratedBy != snap.GeneratedBy {
+		t.Errorf("GeneratedBy = %q, want %q", got.GeneratedBy, snap.GeneratedBy)
+	}
+}
+
+func TestAwarenessSnapshotLatest(t *testing.T) {
+	db := testDB(t)
+
+	// Create two snapshots, verify latest is returned.
+	snap1 := &AwarenessSnapshot{
+		ID: "aware-old", Snapshot: "old", GeneratedBy: "agent-1",
+		CreatedAt: 1000,
+	}
+	snap2 := &AwarenessSnapshot{
+		ID: "aware-new", Snapshot: "new", GeneratedBy: "agent-2",
+		CreatedAt: 2000,
+	}
+	if err := db.CreateAwarenessSnapshot(snap1); err != nil {
+		t.Fatalf("CreateAwarenessSnapshot(old): %v", err)
+	}
+	if err := db.CreateAwarenessSnapshot(snap2); err != nil {
+		t.Fatalf("CreateAwarenessSnapshot(new): %v", err)
+	}
+
+	got, err := db.GetLatestAwareness()
+	if err != nil {
+		t.Fatalf("GetLatestAwareness: %v", err)
+	}
+	if got.ID != "aware-new" {
+		t.Errorf("ID = %q, want aware-new (latest)", got.ID)
+	}
+}
+
+func TestCreateAnomalyLog(t *testing.T) {
+	db := testDB(t)
+
+	log := &AnomalyLog{
+		ID:          "anom-001",
+		OperatorID:  "op-001",
+		Type:        "rate_limit_exceeded",
+		Evidence:    "100 requests in 10 seconds",
+		ActionTaken: "throttled",
+		CreatedAt:   time.Now().Unix(),
+	}
+	if err := db.CreateAnomalyLog(log); err != nil {
+		t.Fatalf("CreateAnomalyLog: %v", err)
+	}
+
+	logs, err := db.ListAnomalyLogs("op-001")
+	if err != nil {
+		t.Fatalf("ListAnomalyLogs: %v", err)
+	}
+	if len(logs) != 1 {
+		t.Fatalf("len = %d, want 1", len(logs))
+	}
+	if logs[0].ID != log.ID {
+		t.Errorf("ID = %q, want %q", logs[0].ID, log.ID)
+	}
+	if logs[0].Type != log.Type {
+		t.Errorf("Type = %q, want %q", logs[0].Type, log.Type)
+	}
+}
+
+func TestListAnomalyLogsAll(t *testing.T) {
+	db := testDB(t)
+
+	for i := 0; i < 3; i++ {
+		log := &AnomalyLog{
+			ID:          fmt.Sprintf("anom-%03d", i),
+			OperatorID:  fmt.Sprintf("op-%03d", i),
+			Type:        "test",
+			Evidence:    "evidence",
+			ActionTaken: "none",
+			CreatedAt:   time.Now().Unix(),
+		}
+		if err := db.CreateAnomalyLog(log); err != nil {
+			t.Fatalf("CreateAnomalyLog[%d]: %v", i, err)
+		}
+	}
+
+	// List all (empty operatorID).
+	logs, err := db.ListAnomalyLogs("")
+	if err != nil {
+		t.Fatalf("ListAnomalyLogs: %v", err)
+	}
+	if len(logs) != 3 {
+		t.Fatalf("len = %d, want 3", len(logs))
 	}
 }
