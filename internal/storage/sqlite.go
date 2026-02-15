@@ -99,7 +99,109 @@ CREATE TABLE IF NOT EXISTS shards (
     checksum TEXT NOT NULL,
     FOREIGN KEY (file_id) REFERENCES files(id),
     FOREIGN KEY (node_id) REFERENCES nodes(id)
-);`
+);
+
+CREATE TABLE IF NOT EXISTS operators (
+    id TEXT PRIMARY KEY,
+    public_key BLOB NOT NULL,
+    label TEXT NOT NULL,
+    approved_by TEXT NOT NULL,
+    reputation REAL DEFAULT 0.0,
+    quarantined INTEGER DEFAULT 0,
+    max_agents INTEGER DEFAULT 5,
+    created_at INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS agent_keys (
+    id TEXT PRIMARY KEY,
+    operator_id TEXT NOT NULL,
+    public_key BLOB NOT NULL,
+    label TEXT,
+    last_seen INTEGER,
+    created_at INTEGER NOT NULL,
+    FOREIGN KEY (operator_id) REFERENCES operators(id)
+);
+
+CREATE TABLE IF NOT EXISTS knowledge (
+    id TEXT PRIMARY KEY,
+    agent_id TEXT NOT NULL,
+    operator_id TEXT NOT NULL,
+    type TEXT NOT NULL,
+    domain TEXT NOT NULL,
+    content TEXT NOT NULL,
+    confidence REAL DEFAULT 0.5,
+    sources TEXT,
+    supersedes TEXT,
+    votes_up INTEGER DEFAULT 0,
+    votes_down INTEGER DEFAULT 0,
+    verified_by TEXT,
+    ttl INTEGER,
+    created_at INTEGER NOT NULL,
+    signature TEXT NOT NULL,
+    FOREIGN KEY (agent_id) REFERENCES agent_keys(id),
+    FOREIGN KEY (operator_id) REFERENCES operators(id)
+);
+
+CREATE TABLE IF NOT EXISTS compute_tasks (
+    id TEXT PRIMARY KEY,
+    type TEXT NOT NULL,
+    domain TEXT,
+    description TEXT NOT NULL,
+    priority INTEGER DEFAULT 5,
+    claimed_by TEXT,
+    claimed_at INTEGER,
+    completed INTEGER DEFAULT 0,
+    result_id TEXT,
+    verified_by TEXT,
+    created_at INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS votes (
+    id TEXT PRIMARY KEY,
+    entry_id TEXT NOT NULL,
+    operator_id TEXT NOT NULL,
+    commitment TEXT,
+    vote INTEGER,
+    nonce TEXT,
+    reason TEXT,
+    phase TEXT DEFAULT 'commit',
+    committed_at INTEGER NOT NULL,
+    revealed_at INTEGER,
+    UNIQUE(entry_id, operator_id)
+);
+
+CREATE TABLE IF NOT EXISTS provenance (
+    entry_id TEXT NOT NULL,
+    source_id TEXT NOT NULL,
+    PRIMARY KEY (entry_id, source_id)
+);
+
+CREATE TABLE IF NOT EXISTS awareness (
+    id TEXT PRIMARY KEY,
+    snapshot TEXT NOT NULL,
+    generated_by TEXT NOT NULL,
+    created_at INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS anomaly_logs (
+    id TEXT PRIMARY KEY,
+    operator_id TEXT NOT NULL,
+    type TEXT NOT NULL,
+    evidence TEXT NOT NULL,
+    action_taken TEXT,
+    created_at INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_knowledge_domain ON knowledge(domain);
+CREATE INDEX IF NOT EXISTS idx_knowledge_type ON knowledge(type);
+CREATE INDEX IF NOT EXISTS idx_knowledge_confidence ON knowledge(confidence);
+CREATE INDEX IF NOT EXISTS idx_knowledge_created ON knowledge(created_at);
+CREATE INDEX IF NOT EXISTS idx_compute_tasks_priority ON compute_tasks(priority DESC);
+CREATE INDEX IF NOT EXISTS idx_compute_tasks_claimed ON compute_tasks(claimed_by);
+CREATE INDEX IF NOT EXISTS idx_votes_entry ON votes(entry_id);
+CREATE INDEX IF NOT EXISTS idx_votes_phase ON votes(phase);
+CREATE INDEX IF NOT EXISTS idx_anomaly_operator ON anomaly_logs(operator_id);
+CREATE INDEX IF NOT EXISTS idx_agent_keys_operator ON agent_keys(operator_id);`
 	_, err := d.db.Exec(schema)
 	return err
 }

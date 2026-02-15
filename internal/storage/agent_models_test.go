@@ -196,3 +196,27 @@ func TestStructInstantiation(t *testing.T) {
 		CreatedAt:   1000,
 	}
 }
+
+func TestAgentTablesExist(t *testing.T) {
+	db := testDB(t)
+
+	expected := []string{
+		"operators",
+		"agent_keys",
+		"knowledge",
+		"compute_tasks",
+		"votes",
+		"provenance",
+		"awareness",
+		"anomaly_logs",
+	}
+	for _, table := range expected {
+		var name string
+		err := db.db.QueryRow(
+			"SELECT name FROM sqlite_master WHERE type='table' AND name=?", table,
+		).Scan(&name)
+		if err != nil {
+			t.Errorf("table %q not found: %v", table, err)
+		}
+	}
+}
