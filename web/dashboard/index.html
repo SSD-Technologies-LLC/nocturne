@@ -1,0 +1,174 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Nocturne</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<div class="container">
+
+  <!-- Header -->
+  <header class="header">
+    <div class="logo">NOCTURNE</div>
+    <div class="tagline">encrypted file storage</div>
+  </header>
+
+  <!-- Recovery Banner -->
+  <div id="recoveryBanner" class="recovery-banner hidden">
+    <div class="recovery-banner-text">
+      <div class="recovery-banner-title">Set up recovery key</div>
+      <div class="recovery-banner-desc">Protect your files with a recovery key in case you forget your password.</div>
+    </div>
+    <div class="recovery-banner-form">
+      <input type="password" id="recoveryPassword" placeholder="Enter your password" autocomplete="off">
+      <button class="btn btn-primary btn-sm" id="setupRecoveryBtn" onclick="handleSetupRecovery()">Generate</button>
+    </div>
+  </div>
+
+  <!-- Recovery Display -->
+  <div id="recoveryDisplay" class="recovery-display hidden">
+    <div class="recovery-display-title">Recovery Key Generated</div>
+    <div class="recovery-display-warning">Save these somewhere safe. You will not see them again.</div>
+    <div class="recovery-hex" id="recoveryHexDisplay"></div>
+    <div class="recovery-actions" style="margin-bottom: 12px;">
+      <button class="btn btn-ghost btn-sm" onclick="copyText(document.getElementById('recoveryHexDisplay').textContent, this)">Copy hex key</button>
+    </div>
+    <div class="recovery-mnemonic" id="recoveryMnemonicDisplay"></div>
+    <div class="recovery-actions">
+      <button class="btn btn-ghost btn-sm" onclick="copyText(document.getElementById('recoveryMnemonicDisplay').textContent, this)">Copy mnemonic</button>
+      <button class="btn btn-ghost btn-sm" onclick="dismissRecoveryDisplay()">Dismiss</button>
+    </div>
+  </div>
+
+  <!-- Upload Zone -->
+  <div id="uploadZone" class="upload-zone">
+    <div class="upload-zone-icon">&#8593;</div>
+    <div class="upload-zone-text"><strong>Drop a file</strong> or click to browse</div>
+    <div class="upload-zone-hint">Max 100 MB &middot; Encrypted client-side</div>
+    <input type="file" id="fileInput" onchange="handleFileSelect(this.files[0])">
+  </div>
+
+  <!-- Upload Form -->
+  <div id="uploadForm" class="upload-form hidden">
+    <div class="upload-form-filename" id="uploadFilename"></div>
+    <div class="upload-form-row">
+      <div class="form-group">
+        <label class="form-label">Password</label>
+        <input type="password" id="uploadPassword" placeholder="Encryption password" autocomplete="off">
+      </div>
+      <div class="form-group">
+        <label class="form-label">Cipher</label>
+        <div class="cipher-selector" id="cipherSelector">
+          <label class="cipher-option selected" data-cipher="aes">
+            <input type="radio" name="cipher" value="aes" checked>
+            <span class="cipher-label">AES</span>
+          </label>
+          <label class="cipher-option" data-cipher="noctis">
+            <input type="radio" name="cipher" value="noctis">
+            <span class="cipher-label">NOCTIS</span>
+            <span class="cipher-tag">experimental</span>
+          </label>
+        </div>
+      </div>
+    </div>
+    <div style="display: flex; gap: 8px; margin-top: 16px;">
+      <button class="btn btn-primary" id="uploadBtn" onclick="handleUpload()">Encrypt &amp; Upload</button>
+      <button class="btn btn-ghost" onclick="cancelUpload()">Cancel</button>
+    </div>
+  </div>
+
+  <!-- File List -->
+  <div id="fileListSection">
+    <div class="file-list-header">
+      <div class="file-list-title">Files</div>
+      <div class="file-count" id="fileCount"></div>
+    </div>
+    <div id="fileList"></div>
+  </div>
+
+</div>
+
+<!-- Create Link Modal -->
+<div id="linkModal" class="modal-overlay" onclick="if(event.target===this)closeLinkModal()">
+  <div class="modal">
+    <div class="modal-header">
+      <div class="modal-title">Create shareable link</div>
+      <button class="modal-close" onclick="closeLinkModal()">&times;</button>
+    </div>
+    <div class="modal-body">
+      <div class="form-group">
+        <label class="form-label">Link mode</label>
+        <div class="mode-selector" id="modeSelector">
+          <label class="mode-card selected" data-mode="persistent">
+            <input type="radio" name="linkMode" value="persistent" checked>
+            <span class="mode-card-label">Persistent</span>
+            <span class="mode-card-desc">Always available</span>
+          </label>
+          <label class="mode-card" data-mode="timed">
+            <input type="radio" name="linkMode" value="timed">
+            <span class="mode-card-label">Timed</span>
+            <span class="mode-card-desc">Auto-expires</span>
+          </label>
+          <label class="mode-card" data-mode="onetime">
+            <input type="radio" name="linkMode" value="onetime">
+            <span class="mode-card-label">One-time</span>
+            <span class="mode-card-desc">Burns after download</span>
+          </label>
+        </div>
+      </div>
+      <div class="form-group">
+        <label class="form-label">Link password</label>
+        <input type="password" id="linkPassword" placeholder="Password for link access" autocomplete="off">
+      </div>
+      <div class="form-group hidden" id="expiryGroup">
+        <label class="form-label">Expires in (seconds)</label>
+        <input type="number" id="linkExpiry" placeholder="e.g. 3600 for 1 hour" min="60">
+      </div>
+      <div id="linkResult" class="link-result hidden">
+        <span class="link-result-url" id="linkResultUrl"></span>
+        <button class="btn btn-ghost btn-sm" onclick="copyLinkResult()">Copy</button>
+      </div>
+    </div>
+    <div class="modal-footer" id="linkModalFooter">
+      <button class="btn btn-ghost" onclick="closeLinkModal()">Cancel</button>
+      <button class="btn btn-primary" id="createLinkBtn" onclick="handleCreateLink()">Create Link</button>
+    </div>
+  </div>
+</div>
+
+<!-- Recovery Modal -->
+<div id="recoveryModal" class="modal-overlay" onclick="if(event.target===this)closeRecoveryModal()">
+  <div class="modal">
+    <div class="modal-header">
+      <div class="modal-title">Recover password</div>
+      <button class="modal-close" onclick="closeRecoveryModal()">&times;</button>
+    </div>
+    <div class="modal-body">
+      <div class="form-group">
+        <label class="form-label">Recovery hex key</label>
+        <input type="text" id="recoverHexInput" class="recovery-modal-input" placeholder="Paste your recovery hex key" autocomplete="off">
+      </div>
+      <div id="recoveredPassword" class="hidden">
+        <div class="form-label mb-8">Recovered password</div>
+        <div class="link-result">
+          <span class="link-result-url" id="recoveredPasswordValue"></span>
+          <button class="btn btn-ghost btn-sm" onclick="copyText(document.getElementById('recoveredPasswordValue').textContent)">Copy</button>
+        </div>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-ghost" onclick="closeRecoveryModal()">Cancel</button>
+      <button class="btn btn-primary" id="recoverBtn" onclick="handleRecover()">Recover</button>
+    </div>
+  </div>
+</div>
+
+<!-- Toast Container -->
+<div class="toast-container" id="toastContainer"></div>
+
+<script src="app.js"></script>
+</body>
+</html>

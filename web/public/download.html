@@ -1,0 +1,370 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Nocturne - Download</title>
+  <style>
+    :root {
+      --bg: #000000;
+      --surface: #141414;
+      --border: #262626;
+      --red: #DC2626;
+      --red-muted: rgba(220, 38, 38, 0.3);
+      --red-subtle: rgba(220, 38, 38, 0.1);
+      --text: #FFFFFF;
+      --text-secondary: #737373;
+      --text-muted: #525252;
+      --amber: #F59E0B;
+      --green: #22C55E;
+      --font: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+      --mono: 'SF Mono', 'Cascadia Code', 'Fira Code', 'JetBrains Mono', 'Consolas', monospace;
+      --radius: 8px;
+      --radius-lg: 12px;
+      --transition: 150ms ease;
+    }
+
+    *, *::before, *::after {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      font-family: var(--font);
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 24px;
+      -webkit-font-smoothing: antialiased;
+      -moz-osx-font-smoothing: grayscale;
+    }
+
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-lg);
+      width: 100%;
+      max-width: 420px;
+      padding: 32px;
+    }
+
+    .logo {
+      font-size: 18px;
+      font-weight: 700;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      color: var(--text);
+      text-align: center;
+      margin-bottom: 4px;
+      user-select: none;
+    }
+
+    .logo::after {
+      content: '.';
+      color: var(--red);
+    }
+
+    .tagline {
+      font-size: 12px;
+      color: var(--text-secondary);
+      text-align: center;
+      margin-bottom: 28px;
+    }
+
+    .mode-indicator {
+      text-align: center;
+      font-size: 12px;
+      font-weight: 500;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      padding: 6px 12px;
+      border-radius: 100px;
+      display: inline-block;
+      margin: 0 auto 24px;
+      width: auto;
+    }
+
+    .mode-indicator-wrap {
+      text-align: center;
+      margin-bottom: 24px;
+    }
+
+    .mode-persistent {
+      background: #262626;
+      color: var(--text);
+    }
+
+    .mode-timed {
+      background: rgba(245, 158, 11, 0.15);
+      color: var(--amber);
+    }
+
+    .mode-onetime {
+      background: var(--red-subtle);
+      color: var(--red);
+    }
+
+    .form-group {
+      margin-bottom: 16px;
+    }
+
+    .form-label {
+      font-size: 12px;
+      font-weight: 500;
+      color: var(--text-secondary);
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      display: block;
+      margin-bottom: 6px;
+    }
+
+    input[type="password"],
+    input[type="text"] {
+      font-family: var(--font);
+      font-size: 14px;
+      padding: 10px 14px;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      color: var(--text);
+      outline: none;
+      transition: border-color var(--transition), box-shadow var(--transition);
+      width: 100%;
+    }
+
+    input:focus {
+      border-color: var(--red);
+      box-shadow: 0 0 0 3px var(--red-muted);
+    }
+
+    input::placeholder {
+      color: var(--text-muted);
+    }
+
+    .btn {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      width: 100%;
+      padding: 12px 20px;
+      font-size: 14px;
+      font-weight: 600;
+      font-family: var(--font);
+      border: none;
+      border-radius: var(--radius);
+      cursor: pointer;
+      transition: all var(--transition);
+      color: var(--text);
+      background: var(--red);
+      margin-top: 8px;
+      position: relative;
+    }
+
+    .btn:hover:not(:disabled) {
+      background: #B91C1C;
+      box-shadow: 0 0 16px var(--red-muted);
+    }
+
+    .btn:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+
+    .btn-loading {
+      color: transparent !important;
+    }
+
+    .btn-loading::after {
+      content: '';
+      position: absolute;
+      width: 16px;
+      height: 16px;
+      border: 2px solid rgba(255, 255, 255, 0.3);
+      border-top-color: var(--text);
+      border-radius: 50%;
+      animation: spin 0.6s linear infinite;
+    }
+
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
+
+    /* File info shown after verify */
+    .file-info {
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 14px 16px;
+      margin-bottom: 20px;
+    }
+
+    .file-info.hidden {
+      display: none;
+    }
+
+    .file-info-name {
+      font-size: 14px;
+      font-weight: 600;
+      color: var(--text);
+      margin-bottom: 4px;
+      word-break: break-all;
+    }
+
+    .file-info-meta {
+      display: flex;
+      gap: 12px;
+      font-size: 12px;
+      color: var(--text-muted);
+    }
+
+    .file-info-cipher {
+      font-family: var(--mono);
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      padding: 2px 6px;
+      border-radius: 100px;
+    }
+
+    .file-info-cipher.noctis {
+      background: var(--red);
+      color: var(--text);
+    }
+
+    .file-info-cipher.aes {
+      background: #262626;
+      color: var(--text);
+    }
+
+    /* Error message */
+    .error-msg {
+      font-size: 13px;
+      color: var(--red);
+      text-align: center;
+      margin-top: 12px;
+      min-height: 20px;
+    }
+
+    .error-msg.hidden {
+      display: none;
+    }
+
+    /* Shake animation for errors */
+    @keyframes shake {
+      0%, 100% { transform: translateX(0); }
+      10%, 30%, 50%, 70%, 90% { transform: translateX(-4px); }
+      20%, 40%, 60%, 80% { transform: translateX(4px); }
+    }
+
+    .shake {
+      animation: shake 0.5s ease;
+    }
+
+    /* Success flash */
+    @keyframes successFlash {
+      0% { border-color: var(--border); }
+      50% { border-color: var(--green); box-shadow: 0 0 20px rgba(34, 197, 94, 0.3); }
+      100% { border-color: var(--border); }
+    }
+
+    .success-flash {
+      animation: successFlash 0.8s ease;
+    }
+
+    /* Step 2 hidden by default */
+    .step-2 {
+      display: none;
+    }
+
+    .step-2.active {
+      display: block;
+    }
+
+    .step-1.hidden {
+      display: none;
+    }
+
+    .gone-state {
+      text-align: center;
+      padding: 20px 0;
+    }
+
+    .gone-state-title {
+      font-size: 16px;
+      font-weight: 600;
+      color: var(--text);
+      margin-bottom: 4px;
+    }
+
+    .gone-state-msg {
+      font-size: 13px;
+      color: var(--text-secondary);
+    }
+
+    .gone-state.hidden {
+      display: none;
+    }
+
+    .hidden {
+      display: none !important;
+    }
+
+    .mono {
+      font-family: var(--mono);
+    }
+  </style>
+</head>
+<body>
+
+<div class="card" id="mainCard">
+
+  <!-- Branding -->
+  <div class="logo">NOCTURNE</div>
+  <div class="tagline">encrypted file storage</div>
+
+  <!-- Gone state (expired/burned) -->
+  <div id="goneState" class="gone-state hidden">
+    <div class="gone-state-title" id="goneTitle">Link unavailable</div>
+    <div class="gone-state-msg" id="goneMsg">This link is no longer accessible.</div>
+  </div>
+
+  <!-- Step 1: Verify link password -->
+  <div id="step1" class="step-1">
+    <div class="mode-indicator-wrap" id="modeWrap" style="display:none;">
+      <span class="mode-indicator" id="modeIndicator"></span>
+    </div>
+    <div class="form-group">
+      <label class="form-label">Link password</label>
+      <input type="password" id="linkPassword" placeholder="Enter link password" autocomplete="off">
+    </div>
+    <button class="btn" id="verifyBtn" onclick="handleVerify()">Verify Access</button>
+    <div class="error-msg hidden" id="step1Error"></div>
+  </div>
+
+  <!-- Step 2: File info + decrypt -->
+  <div id="step2" class="step-2">
+    <div class="file-info" id="fileInfo">
+      <div class="file-info-name" id="fileName"></div>
+      <div class="file-info-meta">
+        <span id="fileSize"></span>
+        <span class="file-info-cipher" id="fileCipher"></span>
+      </div>
+    </div>
+    <div class="form-group">
+      <label class="form-label">File password</label>
+      <input type="password" id="filePassword" placeholder="Enter decryption password" autocomplete="off">
+    </div>
+    <button class="btn" id="downloadBtn" onclick="handleDownload()">Decrypt &amp; Download</button>
+    <div class="error-msg hidden" id="step2Error"></div>
+  </div>
+
+</div>
+
+<script src="download.js"></script>
+</body>
+</html>
