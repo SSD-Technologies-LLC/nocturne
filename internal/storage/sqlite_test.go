@@ -235,3 +235,221 @@ func TestDeleteFile(t *testing.T) {
 		t.Fatal("expected error after delete, got nil")
 	}
 }
+
+// --- Task 4: Link CRUD tests ---
+
+// seedFile creates a recovery key and file for link tests.
+func seedFile(t *testing.T, db *DB) *File {
+	t.Helper()
+	rk := seedRecoveryKey(t, db)
+	f := &File{
+		ID:         "file-link-test",
+		Name:       "linked.txt",
+		Size:       256,
+		Cipher:     "aes-256-gcm",
+		Salt:       []byte("s"),
+		Nonce:      []byte("n"),
+		Blob:       []byte("b"),
+		RecoveryID: rk.ID,
+		CreatedAt:  time.Now().Unix(),
+	}
+	if err := db.CreateFile(f); err != nil {
+		t.Fatalf("CreateFile: %v", err)
+	}
+	return f
+}
+
+func TestCreateAndGetLink(t *testing.T) {
+	db := testDB(t)
+	f := seedFile(t, db)
+
+	exp := time.Now().Add(24 * time.Hour).Unix()
+	l := &Link{
+		ID:           "link-001",
+		FileID:       f.ID,
+		Mode:         "password",
+		PasswordHash: []byte("hashed-pw"),
+		ExpiresAt:    &exp,
+		Burned:       false,
+		Downloads:    0,
+		CreatedAt:    time.Now().Unix(),
+	}
+	if err := db.CreateLink(l); err != nil {
+		t.Fatalf("CreateLink: %v", err)
+	}
+
+	got, err := db.GetLink(l.ID)
+	if err != nil {
+		t.Fatalf("GetLink: %v", err)
+	}
+	if got.ID != l.ID {
+		t.Errorf("ID = %q, want %q", got.ID, l.ID)
+	}
+	if got.FileID != l.FileID {
+		t.Errorf("FileID = %q, want %q", got.FileID, l.FileID)
+	}
+	if got.Mode != l.Mode {
+		t.Errorf("Mode = %q, want %q", got.Mode, l.Mode)
+	}
+	if string(got.PasswordHash) != string(l.PasswordHash) {
+		t.Errorf("PasswordHash mismatch")
+	}
+	if got.ExpiresAt == nil {
+		t.Fatal("ExpiresAt is nil, expected non-nil")
+	}
+	if *got.ExpiresAt != *l.ExpiresAt {
+		t.Errorf("ExpiresAt = %d, want %d", *got.ExpiresAt, *l.ExpiresAt)
+	}
+	if got.Burned {
+		t.Error("Burned = true, want false")
+	}
+	if got.Downloads != 0 {
+		t.Errorf("Downloads = %d, want 0", got.Downloads)
+	}
+}
+
+func TestCreateAndGetLink_NilExpiry(t *testing.T) {
+	db := testDB(t)
+	f := seedFile(t, db)
+
+	l := &Link{
+		ID:           "link-noexp",
+		FileID:       f.ID,
+		Mode:         "open",
+		PasswordHash: []byte("h"),
+		ExpiresAt:    nil,
+		CreatedAt:    time.Now().Unix(),
+	}
+	if err := db.CreateLink(l); err != nil {
+		t.Fatalf("CreateLink: %v", err)
+	}
+
+	got, err := db.GetLink(l.ID)
+	if err != nil {
+		t.Fatalf("GetLink: %v", err)
+	}
+	if got.ExpiresAt != nil {
+		t.Errorf("ExpiresAt = %v, want nil", got.ExpiresAt)
+	}
+}
+
+func TestBurnLink(t *testing.T) {
+	db := testDB(t)
+	f := seedFile(t, db)
+
+	l := &Link{
+		ID:           "link-burn",
+		FileID:       f.ID,
+		Mode:         "burn",
+		PasswordHash: []byte("h"),
+		CreatedAt:    time.Now().Unix(),
+	}
+	if err := db.CreateLink(l); err != nil {
+		t.Fatalf("CreateLink: %v", err)
+	}
+
+	if err := db.BurnLink(l.ID); err != nil {
+		t.Fatalf("BurnLink: %v", err)
+	}
+
+	got, err := db.GetLink(l.ID)
+	if err != nil {
+		t.Fatalf("GetLink after burn: %v", err)
+	}
+	if !got.Burned {
+		t.Error("Burned = false after BurnLink, want true")
+	}
+	if got.Downloads != 1 {
+		t.Errorf("Downloads = %d after BurnLink, want 1", got.Downloads)
+	}
+}
+
+func TestIncrementDownloads(t *testing.T) {
+	db := testDB(t)
+	f := seedFile(t, db)
+
+	l := &Link{
+		ID:           "link-dl",
+		FileID:       f.ID,
+		Mode:         "open",
+		PasswordHash: []byte("h"),
+		CreatedAt:    time.Now().Unix(),
+	}
+	if err := db.CreateLink(l); err != nil {
+		t.Fatalf("CreateLink: %v", err)
+	}
+
+	for i := 0; i < 3; i++ {
+		if err := db.IncrementDownloads(l.ID); err != nil {
+			t.Fatalf("IncrementDownloads[%d]: %v", i, err)
+		}
+	}
+
+	got, err := db.GetLink(l.ID)
+	if err != nil {
+		t.Fatalf("GetLink: %v", err)
+	}
+	if got.Downloads != 3 {
+		t.Errorf("Downloads = %d, want 3", got.Downloads)
+	}
+}
+
+func TestListLinksForFile(t *testing.T) {
+	db := testDB(t)
+	f := seedFile(t, db)
+
+	for i := 0; i < 3; i++ {
+		l := &Link{
+			ID:           fmt.Sprintf("link-%03d", i),
+			FileID:       f.ID,
+			Mode:         "open",
+			PasswordHash: []byte("h"),
+			CreatedAt:    time.Now().Unix(),
+		}
+		if err := db.CreateLink(l); err != nil {
+			t.Fatalf("CreateLink[%d]: %v", i, err)
+		}
+	}
+
+	links, err := db.ListLinksForFile(f.ID)
+	if err != nil {
+		t.Fatalf("ListLinksForFile: %v", err)
+	}
+	if len(links) != 3 {
+		t.Fatalf("len = %d, want 3", len(links))
+	}
+
+	// Links for a non-existent file should return empty.
+	empty, err := db.ListLinksForFile("no-such-file")
+	if err != nil {
+		t.Fatalf("ListLinksForFile(missing): %v", err)
+	}
+	if len(empty) != 0 {
+		t.Errorf("expected 0 links for missing file, got %d", len(empty))
+	}
+}
+
+func TestDeleteLink(t *testing.T) {
+	db := testDB(t)
+	f := seedFile(t, db)
+
+	l := &Link{
+		ID:           "link-del",
+		FileID:       f.ID,
+		Mode:         "open",
+		PasswordHash: []byte("h"),
+		CreatedAt:    time.Now().Unix(),
+	}
+	if err := db.CreateLink(l); err != nil {
+		t.Fatalf("CreateLink: %v", err)
+	}
+
+	if err := db.DeleteLink(l.ID); err != nil {
+		t.Fatalf("DeleteLink: %v", err)
+	}
+
+	_, err := db.GetLink(l.ID)
+	if err == nil {
+		t.Fatal("expected error after delete, got nil")
+	}
+}

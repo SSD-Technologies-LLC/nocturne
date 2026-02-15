@@ -217,3 +217,129 @@ func (d *DB) DeleteFile(id string) error {
 	}
 	return nil
 }
+
+// --- Link CRUD ---
+
+// boolToInt converts a bool to an integer (0 or 1) for SQLite storage.
+func boolToInt(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
+}
+
+// CreateLink inserts a new link record.
+func (d *DB) CreateLink(l *Link) error {
+	var expiresAt sql.NullInt64
+	if l.ExpiresAt != nil {
+		expiresAt = sql.NullInt64{Int64: *l.ExpiresAt, Valid: true}
+	}
+	_, err := d.db.Exec(
+		`INSERT INTO links (id, file_id, mode, password_hash, expires_at, burned, downloads, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		l.ID, l.FileID, l.Mode, l.PasswordHash, expiresAt, boolToInt(l.Burned), l.Downloads, l.CreatedAt,
+	)
+	if err != nil {
+		return fmt.Errorf("create link: %w", err)
+	}
+	return nil
+}
+
+// GetLink retrieves a link by ID.
+func (d *DB) GetLink(id string) (*Link, error) {
+	l := &Link{}
+	var expiresAt sql.NullInt64
+	var burned int
+	err := d.db.QueryRow(
+		`SELECT id, file_id, mode, password_hash, expires_at, burned, downloads, created_at
+		 FROM links WHERE id = ?`, id,
+	).Scan(&l.ID, &l.FileID, &l.Mode, &l.PasswordHash, &expiresAt, &burned, &l.Downloads, &l.CreatedAt)
+	if err != nil {
+		return nil, fmt.Errorf("get link: %w", err)
+	}
+	if expiresAt.Valid {
+		l.ExpiresAt = &expiresAt.Int64
+	}
+	l.Burned = burned != 0
+	return l, nil
+}
+
+// ListLinksForFile returns all links associated with a file.
+func (d *DB) ListLinksForFile(fileID string) ([]Link, error) {
+	rows, err := d.db.Query(
+		`SELECT id, file_id, mode, password_hash, expires_at, burned, downloads, created_at
+		 FROM links WHERE file_id = ?`, fileID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list links for file: %w", err)
+	}
+	defer rows.Close()
+
+	var links []Link
+	for rows.Next() {
+		var l Link
+		var expiresAt sql.NullInt64
+		var burned int
+		if err := rows.Scan(&l.ID, &l.FileID, &l.Mode, &l.PasswordHash, &expiresAt, &burned, &l.Downloads, &l.CreatedAt); err != nil {
+			return nil, fmt.Errorf("scan link: %w", err)
+		}
+		if expiresAt.Valid {
+			l.ExpiresAt = &expiresAt.Int64
+		}
+		l.Burned = burned != 0
+		links = append(links, l)
+	}
+	return links, rows.Err()
+}
+
+// BurnLink sets burned=1 and increments downloads for a link.
+func (d *DB) BurnLink(id string) error {
+	res, err := d.db.Exec(
+		`UPDATE links SET burned = 1, downloads = downloads + 1 WHERE id = ?`, id,
+	)
+	if err != nil {
+		return fmt.Errorf("burn link: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("burn link rows affected: %w", err)
+	}
+	if n == 0 {
+		return fmt.Errorf("burn link: %w", sql.ErrNoRows)
+	}
+	return nil
+}
+
+// IncrementDownloads increments the download counter for a link.
+func (d *DB) IncrementDownloads(id string) error {
+	res, err := d.db.Exec(
+		`UPDATE links SET downloads = downloads + 1 WHERE id = ?`, id,
+	)
+	if err != nil {
+		return fmt.Errorf("increment downloads: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("increment downloads rows affected: %w", err)
+	}
+	if n == 0 {
+		return fmt.Errorf("increment downloads: %w", sql.ErrNoRows)
+	}
+	return nil
+}
+
+// DeleteLink removes a link by ID.
+func (d *DB) DeleteLink(id string) error {
+	res, err := d.db.Exec(`DELETE FROM links WHERE id = ?`, id)
+	if err != nil {
+		return fmt.Errorf("delete link: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("delete link rows affected: %w", err)
+	}
+	if n == 0 {
+		return fmt.Errorf("delete link: %w", sql.ErrNoRows)
+	}
+	return nil
+}
