@@ -13,6 +13,14 @@ import (
 	"github.com/gorilla/websocket"
 )
 
+// peerConn wraps a websocket connection with a write mutex. gorilla/websocket
+// connections do not support concurrent writers, so every write must be
+// serialized per connection.
+type peerConn struct {
+	conn *websocket.Conn
+	wmu  sync.Mutex // guards writes
+}
+
 // Transport manages WebSocket connections to DHT peers, providing message
 // sending and receiving with automatic Ed25519 signing. Each outbound and
 // inbound connection runs a read-loop goroutine that deserializes messages
@@ -21,7 +29,7 @@ type Transport struct {
 	mu       sync.RWMutex
 	self     NodeID
 	privKey  ed25519.PrivateKey
-	conns    map[NodeID]*websocket.Conn
+	conns    map[NodeID]*peerConn
 	handler  func(*Message, NodeID)
 	listener net.Listener
 	server   *http.Server
@@ -38,7 +46,7 @@ func NewTransport(self NodeID, privKey ed25519.PrivateKey) *Transport {
 	return &Transport{
 		self:    self,
 		privKey: privKey,
-		conns:   make(map[NodeID]*websocket.Conn),
+		conns:   make(map[NodeID]*peerConn),
 	}
 }
 
@@ -71,7 +79,8 @@ func (t *Transport) handleWS(w http.ResponseWriter, r *http.Request) {
 
 	// We don't know the remote NodeID yet; it will be set by the first
 	// message we read in the read loop.
-	go t.readLoop(conn, NodeID{}, true)
+	pc := &peerConn{conn: conn}
+	go t.readLoop(pc, NodeID{}, true)
 }
 
 // Connect establishes an outbound WebSocket connection to a remote peer and
@@ -85,8 +94,9 @@ func (t *Transport) Connect(address string, peerID NodeID) error {
 	}
 	conn.SetReadLimit(1 << 20)
 
+	pc := &peerConn{conn: conn}
 	t.mu.Lock()
-	t.conns[peerID] = conn
+	t.conns[peerID] = pc
 	t.mu.Unlock()
 
 	// Send an identification message so the server side can map this
@@ -100,30 +110,33 @@ func (t *Transport) Connect(address string, peerID NodeID) error {
 	hello.Timestamp = time.Now().Unix()
 	hello.Sign(t.privKey)
 
-	if err := conn.WriteJSON(hello); err != nil {
+	pc.wmu.Lock()
+	writeErr := conn.WriteJSON(hello)
+	pc.wmu.Unlock()
+	if writeErr != nil {
 		conn.Close()
 		t.mu.Lock()
 		delete(t.conns, peerID)
 		t.mu.Unlock()
-		return fmt.Errorf("write hello: %w", err)
+		return fmt.Errorf("write hello: %w", writeErr)
 	}
 
-	go t.readLoop(conn, peerID, false)
+	go t.readLoop(pc, peerID, false)
 	return nil
 }
 
 // readLoop reads JSON messages from a WebSocket connection until it errors or
 // closes. For inbound connections (inbound == true), the first message
 // determines the remote peer's NodeID and registers the connection.
-func (t *Transport) readLoop(conn *websocket.Conn, peerID NodeID, inbound bool) {
+func (t *Transport) readLoop(pc *peerConn, peerID NodeID, inbound bool) {
 	identified := !inbound // outbound connections already know the peer ID
 	defer func() {
-		conn.Close()
+		pc.conn.Close()
 		if identified {
 			t.mu.Lock()
 			// Only remove if the stored conn is the same object (avoids
 			// removing a replacement connection).
-			if existing, ok := t.conns[peerID]; ok && existing == conn {
+			if existing, ok := t.conns[peerID]; ok && existing == pc {
 				delete(t.conns, peerID)
 			}
 			t.mu.Unlock()
@@ -132,7 +145,7 @@ func (t *Transport) readLoop(conn *websocket.Conn, peerID NodeID, inbound bool) 
 
 	for {
 		var msg Message
-		if err := conn.ReadJSON(&msg); err != nil {
+		if err := pc.conn.ReadJSON(&msg); err != nil {
 			return
 		}
 
@@ -140,7 +153,7 @@ func (t *Transport) readLoop(conn *websocket.Conn, peerID NodeID, inbound bool) 
 		if !identified {
 			peerID = msg.Sender.NodeID
 			t.mu.Lock()
-			t.conns[peerID] = conn
+			t.conns[peerID] = pc
 			t.mu.Unlock()
 			identified = true
 		}
@@ -157,10 +170,10 @@ func (t *Transport) readLoop(conn *websocket.Conn, peerID NodeID, inbound bool) 
 
 // Send signs and sends a message to the peer identified by target. The
 // message's Sender.NodeID, Timestamp, and Signature fields are set
-// automatically.
+// automatically. It is safe for concurrent use.
 func (t *Transport) Send(target NodeID, msg *Message) error {
 	t.mu.RLock()
-	conn, ok := t.conns[target]
+	pc, ok := t.conns[target]
 	t.mu.RUnlock()
 
 	if !ok {
@@ -171,7 +184,10 @@ func (t *Transport) Send(target NodeID, msg *Message) error {
 	msg.Timestamp = time.Now().Unix()
 	msg.Sign(t.privKey)
 
-	if err := conn.WriteJSON(msg); err != nil {
+	pc.wmu.Lock()
+	err := pc.conn.WriteJSON(msg)
+	pc.wmu.Unlock()
+	if err != nil {
 		return fmt.Errorf("write: %w", err)
 	}
 	return nil
@@ -191,9 +207,9 @@ func (t *Transport) OnMessage(handler func(*Message, NodeID)) {
 func (t *Transport) ReregisterConn(oldID, newID NodeID) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	if conn, ok := t.conns[oldID]; ok {
+	if pc, ok := t.conns[oldID]; ok {
 		delete(t.conns, oldID)
-		t.conns[newID] = conn
+		t.conns[newID] = pc
 	}
 }
 
@@ -201,14 +217,14 @@ func (t *Transport) ReregisterConn(oldID, newID NodeID) {
 // connection map.
 func (t *Transport) Disconnect(id NodeID) {
 	t.mu.Lock()
-	conn, ok := t.conns[id]
+	pc, ok := t.conns[id]
 	if ok {
 		delete(t.conns, id)
 	}
 	t.mu.Unlock()
 
 	if ok {
-		conn.Close()
+		pc.conn.Close()
 	}
 }
 
@@ -233,8 +249,8 @@ func (t *Transport) Close() {
 	}
 
 	t.mu.Lock()
-	for id, conn := range t.conns {
-		conn.Close()
+	for id, pc := range t.conns {
+		pc.conn.Close()
 		delete(t.conns, id)
 	}
 	t.mu.Unlock()

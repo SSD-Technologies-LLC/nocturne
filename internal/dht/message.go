@@ -17,6 +17,7 @@ const (
 	MsgStore     = "STORE"
 	MsgVote      = "VOTE"
 	MsgQuery     = "QUERY"
+	MsgGossip    = "GOSSIP"
 	MsgResponse  = "RESPONSE"
 	MsgError     = "ERROR"
 )

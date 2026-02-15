@@ -31,6 +31,9 @@ type Node struct {
 	transport *Transport
 	store     *LocalStore
 
+	// Gossip layer (optional, set via SetGossiper).
+	gossiper *Gossiper
+
 	// Pending RPC tracking: map message ID -> response channel.
 	mu      sync.Mutex
 	pending map[string]chan *Message
@@ -90,6 +93,12 @@ func (n *Node) Addr() string { return n.transport.Addr() }
 
 // Table returns the routing table (useful for testing and inspection).
 func (n *Node) Table() *RoutingTable { return n.table }
+
+// Gossiper returns the node's gossiper, or nil if none is set.
+func (n *Node) Gossiper() *Gossiper { return n.gossiper }
+
+// SetGossiper attaches a gossiper to this node.
+func (n *Node) SetGossiper(g *Gossiper) { n.gossiper = g }
 
 // defaultStoreTTL is the time-to-live for entries stored via the STORE RPC.
 const defaultStoreTTL = 24 * time.Hour
@@ -563,6 +572,11 @@ func (n *Node) handleMessage(msg *Message, from NodeID) {
 				return
 			}
 			n.sendResponse(from, msg.ID, MsgResponse, resp)
+		}
+
+	case MsgGossip:
+		if n.gossiper != nil {
+			n.gossiper.HandleGossipMessage(msg.Payload)
 		}
 
 	case MsgResponse:
