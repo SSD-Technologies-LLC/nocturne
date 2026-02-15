@@ -103,3 +103,117 @@ CREATE TABLE IF NOT EXISTS shards (
 	_, err := d.db.Exec(schema)
 	return err
 }
+
+// --- Recovery Key CRUD ---
+
+// CreateRecoveryKey inserts a new recovery key record.
+func (d *DB) CreateRecoveryKey(rk *RecoveryKey) error {
+	_, err := d.db.Exec(
+		`INSERT INTO recovery_keys (id, hex_key, mnemonic, escrow_blob, created_at)
+		 VALUES (?, ?, ?, ?, ?)`,
+		rk.ID, rk.HexKey, rk.Mnemonic, rk.EscrowBlob, rk.CreatedAt,
+	)
+	if err != nil {
+		return fmt.Errorf("create recovery key: %w", err)
+	}
+	return nil
+}
+
+// GetRecoveryKey retrieves a recovery key by ID.
+func (d *DB) GetRecoveryKey(id string) (*RecoveryKey, error) {
+	rk := &RecoveryKey{}
+	err := d.db.QueryRow(
+		`SELECT id, hex_key, mnemonic, escrow_blob, created_at
+		 FROM recovery_keys WHERE id = ?`, id,
+	).Scan(&rk.ID, &rk.HexKey, &rk.Mnemonic, &rk.EscrowBlob, &rk.CreatedAt)
+	if err != nil {
+		return nil, fmt.Errorf("get recovery key: %w", err)
+	}
+	return rk, nil
+}
+
+// ListRecoveryKeys returns all recovery keys.
+func (d *DB) ListRecoveryKeys() ([]RecoveryKey, error) {
+	rows, err := d.db.Query(
+		`SELECT id, hex_key, mnemonic, escrow_blob, created_at FROM recovery_keys`,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list recovery keys: %w", err)
+	}
+	defer rows.Close()
+
+	var keys []RecoveryKey
+	for rows.Next() {
+		var rk RecoveryKey
+		if err := rows.Scan(&rk.ID, &rk.HexKey, &rk.Mnemonic, &rk.EscrowBlob, &rk.CreatedAt); err != nil {
+			return nil, fmt.Errorf("scan recovery key: %w", err)
+		}
+		keys = append(keys, rk)
+	}
+	return keys, rows.Err()
+}
+
+// --- File CRUD ---
+
+// CreateFile inserts a new file record.
+func (d *DB) CreateFile(f *File) error {
+	_, err := d.db.Exec(
+		`INSERT INTO files (id, name, size, mime_type, cipher, salt, nonce, blob, recovery_id, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		f.ID, f.Name, f.Size, f.MimeType, f.Cipher, f.Salt, f.Nonce, f.Blob, f.RecoveryID, f.CreatedAt,
+	)
+	if err != nil {
+		return fmt.Errorf("create file: %w", err)
+	}
+	return nil
+}
+
+// GetFile retrieves a file by ID, including the blob.
+func (d *DB) GetFile(id string) (*File, error) {
+	f := &File{}
+	err := d.db.QueryRow(
+		`SELECT id, name, size, mime_type, cipher, salt, nonce, blob, recovery_id, created_at
+		 FROM files WHERE id = ?`, id,
+	).Scan(&f.ID, &f.Name, &f.Size, &f.MimeType, &f.Cipher, &f.Salt, &f.Nonce, &f.Blob, &f.RecoveryID, &f.CreatedAt)
+	if err != nil {
+		return nil, fmt.Errorf("get file: %w", err)
+	}
+	return f, nil
+}
+
+// ListFiles returns all files without their blob data (for listing).
+func (d *DB) ListFiles() ([]File, error) {
+	rows, err := d.db.Query(
+		`SELECT id, name, size, mime_type, cipher, salt, nonce, recovery_id, created_at FROM files`,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list files: %w", err)
+	}
+	defer rows.Close()
+
+	var files []File
+	for rows.Next() {
+		var f File
+		if err := rows.Scan(&f.ID, &f.Name, &f.Size, &f.MimeType, &f.Cipher, &f.Salt, &f.Nonce, &f.RecoveryID, &f.CreatedAt); err != nil {
+			return nil, fmt.Errorf("scan file: %w", err)
+		}
+		files = append(files, f)
+	}
+	return files, rows.Err()
+}
+
+// DeleteFile removes a file by ID.
+func (d *DB) DeleteFile(id string) error {
+	res, err := d.db.Exec(`DELETE FROM files WHERE id = ?`, id)
+	if err != nil {
+		return fmt.Errorf("delete file: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("delete file rows affected: %w", err)
+	}
+	if n == 0 {
+		return fmt.Errorf("delete file: %w", sql.ErrNoRows)
+	}
+	return nil
+}
