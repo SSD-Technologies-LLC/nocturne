@@ -2,81 +2,25 @@
 
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
-import nacl from 'tweetnacl';
 import { z } from 'zod';
+import { ChildProcess, spawn, execFileSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as os from 'node:os';
 
 // ---------------------------------------------------------------------------
-// Key management
+// Localhost HTTP client (replaces Ed25519-signed HTTPS client)
 // ---------------------------------------------------------------------------
 
-function keyDir(): string {
-  return path.join(os.homedir(), '.nocturne');
-}
-
-function defaultKeyPath(): string {
-  return path.join(keyDir(), 'agent.key');
-}
-
-function loadKey(keyPath: string): { publicKey: Uint8Array; secretKey: Uint8Array } {
-  const hex = fs.readFileSync(keyPath, 'utf-8').trim();
-  const seed = Buffer.from(hex, 'hex');
-  if (seed.length !== 32) {
-    throw new Error(`Invalid key file: expected 32-byte seed (64 hex chars), got ${seed.length} bytes`);
-  }
-  return nacl.sign.keyPair.fromSeed(new Uint8Array(seed));
-}
-
-function generateKey(keyPath: string): { publicKey: Uint8Array; secretKey: Uint8Array } {
-  const seed = nacl.randomBytes(32);
-  const dir = path.dirname(keyPath);
-  if (!fs.existsSync(dir)) {
-    fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
-  }
-  fs.writeFileSync(keyPath, Buffer.from(seed).toString('hex') + '\n', { mode: 0o600 });
-  return nacl.sign.keyPair.fromSeed(seed);
-}
-
-function agentIDFromPublicKey(pub: Uint8Array): string {
-  return Buffer.from(pub.slice(0, 8)).toString('hex');
-}
-
-// ---------------------------------------------------------------------------
-// HTTP client with Ed25519 signing
-// ---------------------------------------------------------------------------
-
-function signRequest(
-  method: string,
-  urlPath: string,
-  body: string | null,
-  agentID: string,
-  secretKey: Uint8Array,
-): Record<string, string> {
-  const timestamp = Math.floor(Date.now() / 1000).toString();
-  const message = method + urlPath + timestamp + (body || '');
-  const sig = nacl.sign.detached(new TextEncoder().encode(message), secretKey);
-  return {
-    'X-Agent-ID': agentID,
-    'X-Agent-Timestamp': timestamp,
-    'X-Agent-Signature': Buffer.from(sig).toString('hex'),
-    'Content-Type': 'application/json',
-  };
-}
-
-let trackerURL = '';
-let agentID = '';
-let secretKey: Uint8Array = new Uint8Array(0);
+let apiBase = 'http://127.0.0.1:9091';
 
 async function meshRequest(method: string, apiPath: string, body?: unknown): Promise<unknown> {
-  const url = new URL(apiPath, trackerURL);
+  const url = apiBase + apiPath;
   const bodyStr = body ? JSON.stringify(body) : null;
-  const headers = signRequest(method, url.pathname, bodyStr, agentID, secretKey);
 
-  const resp = await fetch(url.toString(), {
+  const resp = await fetch(url, {
     method,
-    headers,
+    headers: bodyStr ? { 'Content-Type': 'application/json' } : {},
     body: bodyStr,
   });
 
@@ -84,7 +28,6 @@ async function meshRequest(method: string, apiPath: string, body?: unknown): Pro
   if (!resp.ok) {
     throw new Error(`${method} ${apiPath} failed (${resp.status}): ${text}`);
   }
-
   if (!text) return null;
   try {
     return JSON.parse(text);
@@ -94,47 +37,93 @@ async function meshRequest(method: string, apiPath: string, body?: unknown): Pro
 }
 
 // ---------------------------------------------------------------------------
+// Child process management for nocturne-agent
+// ---------------------------------------------------------------------------
+
+let agentProcess: ChildProcess | null = null;
+
+async function startAgent(port: number, apiPort: number, bootstrap: string): Promise<void> {
+  const args = ['start', '--port', port.toString(), '--api-port', apiPort.toString()];
+  if (bootstrap) {
+    args.push('--bootstrap', bootstrap);
+  }
+
+  agentProcess = spawn('nocturne-agent', args, {
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+
+  agentProcess.on('error', (err) => {
+    console.error(`nocturne-agent spawn error: ${err.message}`);
+  });
+
+  agentProcess.on('exit', (code, signal) => {
+    if (code !== null && code !== 0) {
+      console.error(`nocturne-agent exited with code ${code}`);
+    } else if (signal) {
+      console.error(`nocturne-agent killed by signal ${signal}`);
+    }
+    agentProcess = null;
+  });
+
+  // Wait for health check
+  const maxRetries = 30;
+  for (let i = 0; i < maxRetries; i++) {
+    try {
+      const resp = await fetch(`http://127.0.0.1:${apiPort}/local/health`);
+      if (resp.ok) return;
+    } catch {
+      // Agent not ready yet
+    }
+    await new Promise((r) => setTimeout(r, 1000));
+  }
+  throw new Error('nocturne-agent failed to start within 30 seconds');
+}
+
+function stopAgent(): void {
+  if (agentProcess) {
+    agentProcess.kill('SIGTERM');
+    agentProcess = null;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Operator ID loader (for mesh_vote)
+// ---------------------------------------------------------------------------
+
+function loadOperatorID(): string {
+  const opPath = path.join(os.homedir(), '.nocturne', 'agent', 'operator.json');
+  try {
+    const data = JSON.parse(fs.readFileSync(opPath, 'utf-8'));
+    return data.operator_id || '';
+  } catch {
+    return '';
+  }
+}
+
+// ---------------------------------------------------------------------------
 // CLI: setup subcommand
 // ---------------------------------------------------------------------------
 
 function runSetup(args: string[]): void {
-  let tracker = '';
   let label = '';
 
   for (let i = 0; i < args.length; i++) {
-    if (args[i] === '--tracker' && i + 1 < args.length) {
-      tracker = args[++i];
-    } else if (args[i] === '--label' && i + 1 < args.length) {
+    if (args[i] === '--label' && i + 1 < args.length) {
       label = args[++i];
     }
   }
 
-  if (!tracker) {
-    console.error('Usage: nocturne-mesh setup --tracker URL --label NAME');
-    process.exit(1);
-  }
   if (!label) {
-    label = os.hostname();
-  }
-
-  const kp = defaultKeyPath();
-  if (fs.existsSync(kp)) {
-    console.error(`Key already exists: ${kp}`);
-    console.error('Delete it first if you want to generate a new one.');
+    console.error('Usage: nocturne-mesh setup --label NAME');
     process.exit(1);
   }
 
-  const keypair = generateKey(kp);
-  const id = agentIDFromPublicKey(keypair.publicKey);
-  const pubHex = Buffer.from(keypair.publicKey).toString('hex');
-
-  console.log(`Generated key: ${kp}`);
-  console.log(`Agent ID: ${id}`);
-  console.log(`Public key (give to admin for enrollment): ${pubHex}`);
-  console.log('');
-  console.log('Ask your admin to run:');
-  console.log(`  curl -X POST ${tracker}/api/admin/operator -H 'X-Admin-Secret: <secret>' \\`);
-  console.log(`    -d '{"public_key":"${pubHex}","label":"${label}","max_agents":5}'`);
+  // Delegate to nocturne-agent setup (uses execFileSync to avoid shell injection)
+  try {
+    execFileSync('nocturne-agent', ['setup', '--label', label], { stdio: 'inherit' });
+  } catch {
+    process.exit(1);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -146,7 +135,7 @@ function runConfig(): void {
     mcpServers: {
       'nocturne-mesh': {
         command: 'npx',
-        args: ['nocturne-mesh', '--tracker', '<TRACKER_URL>'],
+        args: ['nocturne-mesh'],
       },
     },
   };
@@ -159,35 +148,33 @@ function runConfig(): void {
 
 async function startServer(args: string[]): Promise<void> {
   // Parse args
-  let tracker = process.env['NOCTURNE_TRACKER'] || '';
-  let keyPath = defaultKeyPath();
+  let port = 9090;
+  let apiPort = 9091;
+  let bootstrap = '';
 
   for (let i = 0; i < args.length; i++) {
-    if (args[i] === '--tracker' && i + 1 < args.length) {
-      tracker = args[++i];
-    } else if (args[i] === '--key' && i + 1 < args.length) {
-      keyPath = args[++i];
-    }
+    if (args[i] === '--port' && i + 1 < args.length) port = parseInt(args[++i]);
+    else if (args[i] === '--api-port' && i + 1 < args.length) apiPort = parseInt(args[++i]);
+    else if (args[i] === '--bootstrap' && i + 1 < args.length) bootstrap = args[++i];
   }
 
-  if (!tracker) {
-    console.error('Error: --tracker URL or NOCTURNE_TRACKER env required');
-    process.exit(1);
-  }
+  apiBase = `http://127.0.0.1:${apiPort}`;
 
-  // Load key
-  let keypair: { publicKey: Uint8Array; secretKey: Uint8Array };
-  try {
-    keypair = loadKey(keyPath);
-  } catch (err) {
-    console.error(`Failed to load key from ${keyPath}: ${err}`);
-    console.error('Run "nocturne-mesh setup --tracker URL --label NAME" first.');
-    process.exit(1);
-  }
+  // Start the DHT agent as a child process
+  await startAgent(port, apiPort, bootstrap);
 
-  trackerURL = tracker.replace(/\/+$/, '');
-  agentID = agentIDFromPublicKey(keypair.publicKey);
-  secretKey = keypair.secretKey;
+  // Clean up on exit
+  process.on('SIGINT', () => {
+    stopAgent();
+    process.exit(0);
+  });
+  process.on('SIGTERM', () => {
+    stopAgent();
+    process.exit(0);
+  });
+
+  // Load operator ID for voting
+  const operatorID = loadOperatorID();
 
   // Create MCP server
   const server = new McpServer({
@@ -208,13 +195,13 @@ async function startServer(args: string[]): Promise<void> {
     async (params) => {
       const qp = new URLSearchParams();
       if (params.domain) qp.set('domain', params.domain);
-      if (params.query) qp.set('query', params.query);
+      if (params.query) qp.set('text', params.query);
       if (params.min_confidence !== undefined) qp.set('min_confidence', params.min_confidence.toString());
       if (params.limit !== undefined) qp.set('limit', params.limit.toString());
       else qp.set('limit', '20');
 
       const qs = qp.toString();
-      const apiPath = '/api/agent/knowledge' + (qs ? '?' + qs : '');
+      const apiPath = '/local/knowledge' + (qs ? '?' + qs : '');
       const result = await meshRequest('GET', apiPath);
       return { content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }] };
     },
@@ -244,7 +231,7 @@ async function startServer(args: string[]): Promise<void> {
       if (params.tags) body.tags = params.tags;
       if (params.ttl !== undefined) body.ttl = params.ttl;
 
-      const result = await meshRequest('POST', '/api/agent/knowledge', body);
+      const result = await meshRequest('POST', '/local/knowledge', body);
       return { content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }] };
     },
   );
@@ -263,7 +250,7 @@ async function startServer(args: string[]): Promise<void> {
       if (params.domains?.length) qp.set('domains', params.domains.join(','));
 
       const qs = qp.toString();
-      const apiPath = '/api/agent/compute' + (qs ? '?' + qs : '');
+      const apiPath = '/local/compute' + (qs ? '?' + qs : '');
       const result = await meshRequest('GET', apiPath);
       return { content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }] };
     },
@@ -274,7 +261,7 @@ async function startServer(args: string[]): Promise<void> {
     'mesh_awareness',
     'Read the network\'s current self-model: what it knows, what gaps exist, what needs attention. Use this to orient yourself.',
     async () => {
-      const result = await meshRequest('GET', '/api/agent/awareness');
+      const result = await meshRequest('GET', '/local/awareness');
       return { content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }] };
     },
   );
@@ -291,18 +278,20 @@ async function startServer(args: string[]): Promise<void> {
       reason: z.string().optional().describe('Reason for the vote'),
     },
     async (params) => {
-      const body: Record<string, unknown> = {};
-
-      // Support both commit and reveal phases
+      const voteBody: Record<string, unknown> = {
+        entry_key: params.entry_id,
+        operator_id: operatorID,
+        phase: params.commitment ? 'commit' : 'reveal',
+      };
       if (params.commitment) {
-        body.commitment = params.commitment;
+        voteBody.commitment = params.commitment;
       } else {
-        body.vote = params.vote;
-        if (params.nonce) body.nonce = params.nonce;
-        if (params.reason) body.reason = params.reason;
+        voteBody.vote = params.vote;
+        if (params.nonce) voteBody.nonce = params.nonce;
+        if (params.reason) voteBody.reason = params.reason;
       }
 
-      const result = await meshRequest('POST', `/api/agent/knowledge/${params.entry_id}/vote`, body);
+      const result = await meshRequest('POST', '/local/knowledge/vote', voteBody);
       return { content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }] };
     },
   );
@@ -325,7 +314,17 @@ async function startServer(args: string[]): Promise<void> {
         };
       }
 
-      const result = await meshRequest('POST', '/api/agent/reflect', { snapshot: parsed });
+      const result = await meshRequest('POST', '/local/awareness', parsed);
+      return { content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }] };
+    },
+  );
+
+  // --- mesh_peers ---
+  server.tool(
+    'mesh_peers',
+    'List all peers currently connected in the mesh network. Shows peer IDs, addresses, and connection status.',
+    async () => {
+      const result = await meshRequest('GET', '/local/peers');
       return { content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }] };
     },
   );
@@ -348,6 +347,7 @@ if (args[0] === 'setup') {
 } else {
   startServer(args).catch((err) => {
     console.error('Fatal:', err);
+    stopAgent();
     process.exit(1);
   });
 }

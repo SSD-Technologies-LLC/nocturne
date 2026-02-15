@@ -1,3 +1,7 @@
+// Deprecated: The agent storage methods in this file are superseded by the
+// distributed DHT layer (internal/dht). They remain for backward compatibility
+// with the centralized server mode but should not be used for new development.
+// New agent operations should use the DHT Node API instead.
 package storage
 
 import (
