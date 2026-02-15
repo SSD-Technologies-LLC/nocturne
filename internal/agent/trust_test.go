@@ -504,6 +504,280 @@ func TestMixedValidAndInvalidEndorsements(t *testing.T) {
 	}
 }
 
+// --- Revocation Certificate Tests ---
+
+func TestCreateRevocationSignature(t *testing.T) {
+	_, signerPriv := generateTestKey(t)
+	targetPub, _ := generateTestKey(t)
+	targetID := AgentIDFromPublicKey(targetPub)
+	ts := time.Now().Unix()
+
+	rs, err := CreateRevocationSignature(signerPriv, targetID, "compromised key", ts)
+	if err != nil {
+		t.Fatalf("CreateRevocationSignature: %v", err)
+	}
+
+	if rs.OperatorID == "" {
+		t.Error("OperatorID is empty")
+	}
+	if rs.Signature == "" {
+		t.Error("Signature is empty")
+	}
+	if rs.Timestamp != ts {
+		t.Errorf("Timestamp = %d, want %d", rs.Timestamp, ts)
+	}
+
+	// Signature must be valid hex.
+	sigBytes, err := hex.DecodeString(rs.Signature)
+	if err != nil {
+		t.Fatalf("Signature is not valid hex: %v", err)
+	}
+	if len(sigBytes) != ed25519.SignatureSize {
+		t.Errorf("Signature length = %d, want %d", len(sigBytes), ed25519.SignatureSize)
+	}
+
+	// OperatorID must match the signer's public key.
+	signerPub := signerPriv.Public().(ed25519.PublicKey)
+	expectedID := AgentIDFromPublicKey(signerPub)
+	if rs.OperatorID != expectedID {
+		t.Errorf("OperatorID = %q, want %q", rs.OperatorID, expectedID)
+	}
+}
+
+func TestValidateRevocation(t *testing.T) {
+	// 4 genesis operators: 3 will sign the revocation of the 4th.
+	pub1, priv1 := generateTestKey(t)
+	pub2, priv2 := generateTestKey(t)
+	pub3, priv3 := generateTestKey(t)
+	pubTarget, _ := generateTestKey(t)
+
+	genesis := makeGenesisWithKeys(t, []ed25519.PublicKey{pub1, pub2, pub3, pubTarget}, 3)
+	v := NewTrustValidator(genesis)
+
+	targetID := AgentIDFromPublicKey(pubTarget)
+	ts := time.Now().Unix()
+	reason := "key compromise"
+
+	rs1, err := CreateRevocationSignature(priv1, targetID, reason, ts)
+	if err != nil {
+		t.Fatalf("sig 1: %v", err)
+	}
+	rs2, err := CreateRevocationSignature(priv2, targetID, reason, ts)
+	if err != nil {
+		t.Fatalf("sig 2: %v", err)
+	}
+	rs3, err := CreateRevocationSignature(priv3, targetID, reason, ts)
+	if err != nil {
+		t.Fatalf("sig 3: %v", err)
+	}
+
+	rev := &RevocationCertificate{
+		TargetOperatorID: targetID,
+		Reason:           reason,
+		Signatures:       []RevocationSignature{*rs1, *rs2, *rs3},
+		CreatedAt:        ts,
+	}
+
+	if err := v.ValidateRevocation(rev); err != nil {
+		t.Fatalf("ValidateRevocation: %v", err)
+	}
+}
+
+func TestValidateRevocationInsufficientSignatures(t *testing.T) {
+	pub1, priv1 := generateTestKey(t)
+	pub2, _ := generateTestKey(t)
+	pub3, _ := generateTestKey(t)
+	pubTarget, _ := generateTestKey(t)
+
+	genesis := makeGenesisWithKeys(t, []ed25519.PublicKey{pub1, pub2, pub3, pubTarget}, 3)
+	v := NewTrustValidator(genesis)
+
+	targetID := AgentIDFromPublicKey(pubTarget)
+	ts := time.Now().Unix()
+	reason := "policy violation"
+
+	// Only 1 signer when 3 needed.
+	rs1, err := CreateRevocationSignature(priv1, targetID, reason, ts)
+	if err != nil {
+		t.Fatalf("sig: %v", err)
+	}
+
+	rev := &RevocationCertificate{
+		TargetOperatorID: targetID,
+		Reason:           reason,
+		Signatures:       []RevocationSignature{*rs1},
+		CreatedAt:        ts,
+	}
+
+	err = v.ValidateRevocation(rev)
+	if err == nil {
+		t.Fatal("expected error for insufficient revocation signatures, got nil")
+	}
+}
+
+func TestValidateRevocationUntrustedSigner(t *testing.T) {
+	pub1, _ := generateTestKey(t)
+	pub2, _ := generateTestKey(t)
+	pub3, _ := generateTestKey(t)
+	pubTarget, _ := generateTestKey(t)
+
+	genesis := makeGenesisWithKeys(t, []ed25519.PublicKey{pub1, pub2, pub3, pubTarget}, 3)
+	v := NewTrustValidator(genesis)
+
+	targetID := AgentIDFromPublicKey(pubTarget)
+	ts := time.Now().Unix()
+	reason := "untrusted test"
+
+	// All signers are unknown (not in the trusted set).
+	_, unknownPriv1 := generateTestKey(t)
+	_, unknownPriv2 := generateTestKey(t)
+	_, unknownPriv3 := generateTestKey(t)
+
+	rs1, _ := CreateRevocationSignature(unknownPriv1, targetID, reason, ts)
+	rs2, _ := CreateRevocationSignature(unknownPriv2, targetID, reason, ts)
+	rs3, _ := CreateRevocationSignature(unknownPriv3, targetID, reason, ts)
+
+	rev := &RevocationCertificate{
+		TargetOperatorID: targetID,
+		Reason:           reason,
+		Signatures:       []RevocationSignature{*rs1, *rs2, *rs3},
+		CreatedAt:        ts,
+	}
+
+	err := v.ValidateRevocation(rev)
+	if err == nil {
+		t.Fatal("expected error for untrusted signers, got nil")
+	}
+}
+
+func TestRevokeOperator(t *testing.T) {
+	pub1, _ := generateTestKey(t)
+	pub2, _ := generateTestKey(t)
+
+	genesis := makeGenesisWithKeys(t, []ed25519.PublicKey{pub1, pub2}, 1)
+	v := NewTrustValidator(genesis)
+
+	targetID := AgentIDFromPublicKey(pub1)
+
+	// Before revocation: trusted.
+	if !v.IsTrusted(targetID) {
+		t.Fatal("operator should be trusted before revocation")
+	}
+
+	v.RevokeOperator(targetID)
+
+	// After revocation: not trusted.
+	if v.IsTrusted(targetID) {
+		t.Fatal("operator should not be trusted after revocation")
+	}
+	if !v.IsRevoked(targetID) {
+		t.Fatal("operator should be marked as revoked")
+	}
+}
+
+func TestRevokedOperatorCannotEndorse(t *testing.T) {
+	// 4 genesis operators, min endorsements = 3.
+	pub1, priv1 := generateTestKey(t)
+	pub2, priv2 := generateTestKey(t)
+	pub3, priv3 := generateTestKey(t)
+	pub4, _ := generateTestKey(t)
+
+	genesis := makeGenesisWithKeys(t, []ed25519.PublicKey{pub1, pub2, pub3, pub4}, 3)
+	v := NewTrustValidator(genesis)
+
+	// Revoke operator 3.
+	id3 := AgentIDFromPublicKey(pub3)
+	v.RevokeOperator(id3)
+
+	// Now try to get a certificate endorsed by ops 1, 2, and 3 (3 is revoked).
+	newPub, _ := generateTestKey(t)
+	ts := time.Now().Unix()
+
+	e1, _ := CreateEndorsement(priv1, newPub, ts)
+	e2, _ := CreateEndorsement(priv2, newPub, ts)
+	e3, _ := CreateEndorsement(priv3, newPub, ts) // revoked endorser
+
+	cert := NewTrustCertificate(newPub, "endorsed-by-revoked", 10, []Endorsement{*e1, *e2, *e3})
+
+	err := v.ValidateCertificate(cert)
+	if err == nil {
+		t.Fatal("expected error: endorsement from revoked operator should not count")
+	}
+}
+
+func TestSelfRevocationRejected(t *testing.T) {
+	// Target tries to sign their own revocation. Even if they are trusted,
+	// the self-signature must not count.
+	pub1, priv1 := generateTestKey(t)
+	pub2, priv2 := generateTestKey(t)
+	pubTarget, privTarget := generateTestKey(t)
+
+	genesis := makeGenesisWithKeys(t, []ed25519.PublicKey{pub1, pub2, pubTarget}, 3)
+	v := NewTrustValidator(genesis)
+
+	targetID := AgentIDFromPublicKey(pubTarget)
+	ts := time.Now().Unix()
+	reason := "self-revoke attempt"
+
+	// 2 valid + 1 self-signature = only 2 valid, need 3.
+	rs1, _ := CreateRevocationSignature(priv1, targetID, reason, ts)
+	rs2, _ := CreateRevocationSignature(priv2, targetID, reason, ts)
+	rsSelf, _ := CreateRevocationSignature(privTarget, targetID, reason, ts)
+
+	rev := &RevocationCertificate{
+		TargetOperatorID: targetID,
+		Reason:           reason,
+		Signatures:       []RevocationSignature{*rs1, *rs2, *rsSelf},
+		CreatedAt:        ts,
+	}
+
+	err := v.ValidateRevocation(rev)
+	if err == nil {
+		t.Fatal("expected error: self-revocation signature should not count toward threshold")
+	}
+}
+
+func TestIsRevokedDefaultFalse(t *testing.T) {
+	genesis := DefaultGenesis()
+	v := NewTrustValidator(genesis)
+
+	// An operator that has never been seen should not be reported as revoked.
+	randomPub, _ := generateTestKey(t)
+	randomID := AgentIDFromPublicKey(randomPub)
+
+	if v.IsRevoked(randomID) {
+		t.Fatal("unknown operator should not be reported as revoked")
+	}
+}
+
+func TestRevocationDoesNotAffectGenesis(t *testing.T) {
+	// Genesis operators are not immune to revocation. When a genesis operator
+	// is revoked, they lose trust like any other operator.
+	pub1, _ := generateTestKey(t)
+	pub2, _ := generateTestKey(t)
+
+	genesis := makeGenesisWithKeys(t, []ed25519.PublicKey{pub1, pub2}, 1)
+	v := NewTrustValidator(genesis)
+
+	genesisID := AgentIDFromPublicKey(pub1)
+
+	// Initially trusted.
+	if !v.IsTrusted(genesisID) {
+		t.Fatal("genesis operator should initially be trusted")
+	}
+
+	// Revoke the genesis operator.
+	v.RevokeOperator(genesisID)
+
+	// No longer trusted.
+	if v.IsTrusted(genesisID) {
+		t.Fatal("revoked genesis operator should not be trusted")
+	}
+	if !v.IsRevoked(genesisID) {
+		t.Fatal("revoked genesis operator should be marked as revoked")
+	}
+}
+
 func TestDuplicateEndorsementsFromSameOperator(t *testing.T) {
 	// If the same genesis operator endorses twice, it should count twice
 	// (the validator doesn't deduplicate — this tests current behavior).
