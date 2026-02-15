@@ -1,10 +1,13 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"net/http"
 	"os"
+	"os/signal"
+	"syscall"
 
 	"github.com/ssd-technologies/nocturne/internal/server"
 	"github.com/ssd-technologies/nocturne/internal/storage"
@@ -32,7 +35,20 @@ func main() {
 	}
 	defer db.Close()
 
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
 	srv := server.New(db, secret)
+	srv.StartWorkers(ctx)
+
+	// Graceful shutdown on SIGINT/SIGTERM.
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	go func() {
+		<-sigCh
+		log.Println("Shutting down...")
+		cancel()
+	}()
 
 	fmt.Printf("Nocturne running on http://localhost:%s\n", port)
 	log.Fatal(http.ListenAndServe(":"+port, srv))
