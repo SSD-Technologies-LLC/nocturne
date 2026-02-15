@@ -185,6 +185,18 @@ func (t *Transport) OnMessage(handler func(*Message, NodeID)) {
 	t.mu.Unlock()
 }
 
+// ReregisterConn changes the NodeID associated with an existing connection.
+// This is used during Ping when we initially connect with a temporary placeholder
+// NodeID and later learn the real peer ID from the PONG response.
+func (t *Transport) ReregisterConn(oldID, newID NodeID) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if conn, ok := t.conns[oldID]; ok {
+		delete(t.conns, oldID)
+		t.conns[newID] = conn
+	}
+}
+
 // Disconnect closes the connection to a specific peer and removes it from the
 // connection map.
 func (t *Transport) Disconnect(id NodeID) {
