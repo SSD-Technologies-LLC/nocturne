@@ -55,6 +55,9 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /s/{slug}/verify", s.handlePublicVerify)
 	s.mux.HandleFunc("POST /s/{slug}/download", s.handlePublicDownload)
 
+	// Agent network
+	s.agentRoutes()
+
 	// Static files — embedded frontend
 	dashboardFS, _ := fs.Sub(web.FS, "dashboard")
 	publicFS, _ := fs.Sub(web.FS, "public")
