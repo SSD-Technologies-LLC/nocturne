@@ -4,11 +4,26 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/ssd-technologies/nocturne/internal/crypto"
 	"github.com/ssd-technologies/nocturne/internal/storage"
 )
+
+// sanitizeFilename strips directory traversal, quotes, and CR/LF from a filename
+// to prevent Content-Disposition header injection attacks.
+func sanitizeFilename(name string) string {
+	// Normalize backslash separators (Windows-style paths) before calling filepath.Base.
+	name = strings.ReplaceAll(name, `\`, "/")
+	name = filepath.Base(name)
+	name = strings.NewReplacer(`"`, "", "\r", "", "\n", "").Replace(name)
+	if name == "" || name == "." || name == ".." {
+		return "download"
+	}
+	return name
+}
 
 // verifyRequest is the JSON body for verifying a link password.
 type verifyRequest struct {
@@ -134,7 +149,7 @@ func (s *Server) handlePublicDownload(w http.ResponseWriter, r *http.Request) {
 
 	// Stream the decrypted file.
 	w.Header().Set("Content-Type", "application/octet-stream")
-	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, file.Name))
+	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, sanitizeFilename(file.Name)))
 	w.Header().Set("Content-Length", fmt.Sprintf("%d", len(plaintext)))
 	w.WriteHeader(http.StatusOK)
 	w.Write(plaintext)

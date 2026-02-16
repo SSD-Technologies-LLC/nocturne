@@ -582,3 +582,78 @@ func TestAuth_PublicRoutesNoAuth(t *testing.T) {
 		t.Fatal("public route should not require auth")
 	}
 }
+
+// TestSanitizeFilename tests the sanitizeFilename function against various attack vectors.
+func TestSanitizeFilename(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{"normal", "hello.txt", "hello.txt"},
+		{"directory traversal", "../../etc/passwd", "passwd"},
+		{"quotes and CRLF injection", "file\"\r\nX-Injected: true", "fileX-Injected: true"},
+		{"only dots", "..", "download"},
+		{"empty after strip", "", "download"},
+		{"single dot", ".", "download"},
+		{"nested traversal", "../../../secret.txt", "secret.txt"},
+		{"backslash path", `..\..\secret.txt`, "secret.txt"},
+		{"quotes only", `"`, "download"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := sanitizeFilename(tt.input)
+			if got != tt.want {
+				t.Errorf("sanitizeFilename(%q) = %q, want %q", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestPublicDownload_SanitizesFilename tests that malicious filenames are sanitized
+// in the Content-Disposition header to prevent header injection and directory traversal.
+func TestPublicDownload_SanitizesFilename(t *testing.T) {
+	srv := setupTestServer(t)
+
+	// Upload a file with a filename containing directory traversal characters.
+	// Note: \r\n cannot be tested via multipart upload since the encoder rejects them,
+	// but sanitizeFilename is tested separately for those in TestSanitizeFilename.
+	maliciousName := `../../etc/passwd"`
+	fileResult := uploadTestFile(t, srv, maliciousName, "malicious content", "filepass")
+	fileID := fileResult["id"].(string)
+
+	linkResult := createTestLink(t, srv, fileID, "linkpass", "persistent")
+	slug := linkResult["slug"].(string)
+
+	body, _ := json.Marshal(map[string]string{
+		"link_password": "linkpass",
+		"file_password": "filepass",
+	})
+	req := httptest.NewRequest(http.MethodPost, "/s/"+slug+"/download", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("download: status = %d, want %d; body = %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	cd := rec.Header().Get("Content-Disposition")
+
+	// The sanitized header must not contain directory traversal or injection chars.
+	if strings.Contains(cd, "..") {
+		t.Errorf("Content-Disposition contains '..': %q", cd)
+	}
+	if strings.Contains(cd, "\r") {
+		t.Errorf("Content-Disposition contains '\\r': %q", cd)
+	}
+	if strings.Contains(cd, "\n") {
+		t.Errorf("Content-Disposition contains '\\n': %q", cd)
+	}
+	if strings.Contains(cd, "etc/passwd") {
+		t.Errorf("Content-Disposition contains 'etc/passwd': %q", cd)
+	}
+	if strings.Contains(cd, "X-Injected") {
+		t.Errorf("Content-Disposition contains injected header: %q", cd)
+	}
+}
