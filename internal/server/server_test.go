@@ -673,7 +673,7 @@ func TestSecurityHeaders(t *testing.T) {
 	expected := map[string]string{
 		"X-Frame-Options":           "DENY",
 		"X-Content-Type-Options":    "nosniff",
-		"Content-Security-Policy":   "default-src 'self'",
+		"Content-Security-Policy":   "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'",
 		"Strict-Transport-Security": "max-age=63072000; includeSubDomains",
 		"Referrer-Policy":           "strict-origin-when-cross-origin",
 		"Permissions-Policy":        "camera=(), microphone=(), geolocation=()",
