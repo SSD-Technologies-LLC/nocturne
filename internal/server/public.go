@@ -104,28 +104,35 @@ func (s *Server) handlePublicDownload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Decrypt the file
+	// For one-time links, atomically burn BEFORE decryption to prevent races.
+	if link.Mode == "onetime" {
+		burned, err := s.db.TryBurnLink(link.ID)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to burn link")
+			return
+		}
+		if !burned {
+			writeError(w, http.StatusGone, "link has already been used")
+			return
+		}
+	}
+
+	// Decrypt the file.
 	plaintext, err := crypto.Decrypt(file.Blob, req.FilePassword, file.Cipher, file.Salt, file.Nonce)
 	if err != nil {
 		writeError(w, http.StatusUnauthorized, "decryption failed: wrong file password")
 		return
 	}
 
-	// Handle link mode
-	switch link.Mode {
-	case "onetime":
-		if err := s.db.BurnLink(link.ID); err != nil {
-			writeError(w, http.StatusInternalServerError, "failed to burn link")
-			return
-		}
-	default:
+	// For non-onetime links, increment download count.
+	if link.Mode != "onetime" {
 		if err := s.db.IncrementDownloads(link.ID); err != nil {
 			writeError(w, http.StatusInternalServerError, "failed to increment downloads")
 			return
 		}
 	}
 
-	// Stream the decrypted file
+	// Stream the decrypted file.
 	w.Header().Set("Content-Type", "application/octet-stream")
 	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, file.Name))
 	w.Header().Set("Content-Length", fmt.Sprintf("%d", len(plaintext)))

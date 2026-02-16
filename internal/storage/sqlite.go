@@ -416,6 +416,22 @@ func (d *DB) BurnLink(id string) error {
 	return nil
 }
 
+// TryBurnLink atomically marks a link as burned if it hasn't been burned yet.
+// Returns true if the link was successfully burned, false if it was already burned.
+func (d *DB) TryBurnLink(id string) (bool, error) {
+	res, err := d.db.Exec(
+		`UPDATE links SET burned = 1, downloads = downloads + 1 WHERE id = ? AND burned = 0`, id,
+	)
+	if err != nil {
+		return false, fmt.Errorf("try burn link: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("try burn link rows affected: %w", err)
+	}
+	return n == 1, nil
+}
+
 // IncrementDownloads increments the download counter for a link.
 func (d *DB) IncrementDownloads(id string) error {
 	res, err := d.db.Exec(

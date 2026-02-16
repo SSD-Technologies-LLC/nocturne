@@ -364,6 +364,62 @@ func TestBurnLink(t *testing.T) {
 	}
 }
 
+func TestTryBurnLink(t *testing.T) {
+	db := testDB(t)
+	f := seedFile(t, db)
+
+	// Create a one-time link.
+	link := &Link{
+		ID:           "link-tryburn",
+		FileID:       f.ID,
+		Mode:         "onetime",
+		PasswordHash: []byte("hash"),
+		CreatedAt:    time.Now().Unix(),
+	}
+	if err := db.CreateLink(link); err != nil {
+		t.Fatalf("CreateLink: %v", err)
+	}
+
+	// First burn should succeed.
+	ok, err := db.TryBurnLink("link-tryburn")
+	if err != nil {
+		t.Fatalf("TryBurnLink: %v", err)
+	}
+	if !ok {
+		t.Fatal("first burn should succeed")
+	}
+
+	// Second burn should fail (already burned).
+	ok, err = db.TryBurnLink("link-tryburn")
+	if err != nil {
+		t.Fatalf("TryBurnLink second: %v", err)
+	}
+	if ok {
+		t.Fatal("second burn should fail")
+	}
+
+	// Non-existent link should also return false.
+	ok, err = db.TryBurnLink("nonexistent")
+	if err != nil {
+		t.Fatalf("TryBurnLink nonexistent: %v", err)
+	}
+	if ok {
+		t.Fatal("non-existent link should return false")
+	}
+
+	// Verify the link state after burn.
+	got, err := db.GetLink("link-tryburn")
+	if err != nil {
+		t.Fatalf("GetLink after TryBurnLink: %v", err)
+	}
+	if !got.Burned {
+		t.Error("Burned = false after TryBurnLink, want true")
+	}
+	if got.Downloads != 1 {
+		t.Errorf("Downloads = %d after TryBurnLink, want 1", got.Downloads)
+	}
+}
+
 func TestIncrementDownloads(t *testing.T) {
 	db := testDB(t)
 	f := seedFile(t, db)
