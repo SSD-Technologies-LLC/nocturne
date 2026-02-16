@@ -2,6 +2,7 @@ package dht
 
 import (
 	"encoding/json"
+	"math/rand"
 	"sync"
 	"time"
 )
@@ -114,8 +115,13 @@ func (g *Gossiper) HandleGossipMessage(payload json.RawMessage) {
 	g.forward(&gmsg)
 }
 
-// forward sends a gossip message to all connected peers, skipping the
-// original sender to avoid echo loops.
+// maxGossipFanOut limits how many peers a single gossip message is forwarded
+// to. This caps amplification while still providing probabilistic coverage.
+const maxGossipFanOut = 3
+
+// forward sends a gossip message to a random subset of connected peers,
+// skipping the original sender to avoid echo loops. Fan-out is capped at
+// maxGossipFanOut to prevent amplification attacks.
 func (g *Gossiper) forward(gmsg *GossipMessage) error {
 	data, err := json.Marshal(gmsg)
 	if err != nil {
@@ -123,10 +129,24 @@ func (g *Gossiper) forward(gmsg *GossipMessage) error {
 	}
 
 	peers := g.node.transport.ConnectedPeers()
+
+	// Build eligible list excluding the origin.
+	eligible := make([]NodeID, 0, len(peers))
 	for _, peerID := range peers {
-		if peerID == gmsg.Origin {
-			continue // don't send back to origin
+		if peerID != gmsg.Origin {
+			eligible = append(eligible, peerID)
 		}
+	}
+
+	// Cap fan-out: shuffle and truncate to maxGossipFanOut.
+	if len(eligible) > maxGossipFanOut {
+		rand.Shuffle(len(eligible), func(i, j int) {
+			eligible[i], eligible[j] = eligible[j], eligible[i]
+		})
+		eligible = eligible[:maxGossipFanOut]
+	}
+
+	for _, peerID := range eligible {
 		msg := &Message{
 			Type:    MsgGossip,
 			ID:      randomMsgID(),

@@ -4,8 +4,10 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
+	"time"
 
 	"github.com/gorilla/websocket"
+	"github.com/ssd-technologies/nocturne/internal/ratelimit"
 )
 
 // WSMessage is the JSON message format for WebSocket communication.
@@ -44,6 +46,7 @@ func HandleWebSocket(tracker *Tracker) http.HandlerFunc {
 		}
 		defer conn.Close()
 
+		limiter := ratelimit.New(60, time.Minute)
 		var nodeID string
 
 		defer func() {
@@ -59,6 +62,11 @@ func HandleWebSocket(tracker *Tracker) http.HandlerFunc {
 					log.Printf("websocket read error: %v", err)
 				}
 				return
+			}
+
+			if !limiter.Allow() {
+				writeError(conn, "rate limit exceeded")
+				continue
 			}
 
 			switch msg.Type {

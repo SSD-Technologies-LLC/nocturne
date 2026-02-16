@@ -12,15 +12,17 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	"github.com/ssd-technologies/nocturne/internal/ratelimit"
 )
 
 // peerConn wraps a websocket connection with a write mutex. gorilla/websocket
 // connections do not support concurrent writers, so every write must be
 // serialized per connection.
 type peerConn struct {
-	conn   *websocket.Conn
-	wmu    sync.Mutex // guards writes
-	pubKey ed25519.PublicKey
+	conn    *websocket.Conn
+	wmu     sync.Mutex // guards writes
+	pubKey  ed25519.PublicKey
+	limiter *ratelimit.Limiter
 }
 
 // Transport manages WebSocket connections to DHT peers, providing message
@@ -81,7 +83,7 @@ func (t *Transport) handleWS(w http.ResponseWriter, r *http.Request) {
 
 	// We don't know the remote NodeID yet; it will be set by the first
 	// message we read in the read loop.
-	pc := &peerConn{conn: conn}
+	pc := &peerConn{conn: conn, limiter: ratelimit.New(100, time.Minute)}
 	go t.readLoop(pc, NodeID{}, true)
 }
 
@@ -96,7 +98,7 @@ func (t *Transport) Connect(address string, peerID NodeID) error {
 	}
 	conn.SetReadLimit(1 << 20)
 
-	pc := &peerConn{conn: conn}
+	pc := &peerConn{conn: conn, limiter: ratelimit.New(100, time.Minute)}
 	t.mu.Lock()
 	t.conns[peerID] = pc
 	t.mu.Unlock()
@@ -150,6 +152,10 @@ func (t *Transport) readLoop(pc *peerConn, peerID NodeID, inbound bool) {
 		var msg Message
 		if err := pc.conn.ReadJSON(&msg); err != nil {
 			return
+		}
+
+		if !pc.limiter.Allow() {
+			continue // drop — peer is flooding
 		}
 
 		// For inbound connections, the first message reveals the peer's identity.
