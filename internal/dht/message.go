@@ -28,6 +28,7 @@ type SenderInfo struct {
 	AgentID    string `json:"agent_id"`
 	OperatorID string `json:"operator_id"`
 	Address    string `json:"address"`
+	PublicKey  string `json:"public_key,omitempty"`
 }
 
 // Message is the common envelope for all DHT messages.

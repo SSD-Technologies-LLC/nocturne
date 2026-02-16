@@ -3,6 +3,7 @@ package dht
 import (
 	"context"
 	"crypto/ed25519"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -17,8 +18,9 @@ import (
 // connections do not support concurrent writers, so every write must be
 // serialized per connection.
 type peerConn struct {
-	conn *websocket.Conn
-	wmu  sync.Mutex // guards writes
+	conn   *websocket.Conn
+	wmu    sync.Mutex // guards writes
+	pubKey ed25519.PublicKey
 }
 
 // Transport manages WebSocket connections to DHT peers, providing message
@@ -107,6 +109,7 @@ func (t *Transport) Connect(address string, peerID NodeID) error {
 		Payload: json.RawMessage(`{}`),
 	}
 	hello.Sender.NodeID = t.self
+	hello.Sender.PublicKey = hex.EncodeToString(t.privKey.Public().(ed25519.PublicKey))
 	hello.Timestamp = time.Now().Unix()
 	hello.Sign(t.privKey)
 
@@ -151,6 +154,19 @@ func (t *Transport) readLoop(pc *peerConn, peerID NodeID, inbound bool) {
 
 		// For inbound connections, the first message reveals the peer's identity.
 		if !identified {
+			// Verify public key matches claimed NodeID before trusting.
+			if msg.Sender.PublicKey != "" {
+				pkBytes, err := hex.DecodeString(msg.Sender.PublicKey)
+				if err == nil && len(pkBytes) == ed25519.PublicKeySize {
+					expectedID := NodeIDFromPublicKey(ed25519.PublicKey(pkBytes))
+					if expectedID == msg.Sender.NodeID {
+						pc.pubKey = ed25519.PublicKey(pkBytes)
+					} else {
+						// NodeID doesn't match public key — reject connection.
+						return
+					}
+				}
+			}
 			peerID = msg.Sender.NodeID
 			t.mu.Lock()
 			t.conns[peerID] = pc
@@ -181,6 +197,7 @@ func (t *Transport) Send(target NodeID, msg *Message) error {
 	}
 
 	msg.Sender.NodeID = t.self
+	msg.Sender.PublicKey = hex.EncodeToString(t.privKey.Public().(ed25519.PublicKey))
 	msg.Timestamp = time.Now().Unix()
 	msg.Sign(t.privKey)
 
@@ -238,6 +255,18 @@ func (t *Transport) ConnectedPeers() []NodeID {
 		peers = append(peers, id)
 	}
 	return peers
+}
+
+// PeerPublicKey returns the verified Ed25519 public key for the given peer,
+// if one was provided and verified during connection setup.
+func (t *Transport) PeerPublicKey(id NodeID) (ed25519.PublicKey, bool) {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	pc, ok := t.conns[id]
+	if !ok || pc.pubKey == nil {
+		return nil, false
+	}
+	return pc.pubKey, true
 }
 
 // Close shuts down the listener and closes all peer connections.

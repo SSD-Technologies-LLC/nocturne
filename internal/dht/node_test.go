@@ -3,6 +3,8 @@ package dht
 import (
 	"crypto/ed25519"
 	"crypto/rand"
+	"encoding/hex"
+	"encoding/json"
 	"testing"
 	"time"
 )
@@ -242,5 +244,145 @@ func TestNodeHandleMessageUpdatesTable(t *testing.T) {
 	}
 	if closest[0].ID != bID2 {
 		t.Fatalf("A's table contains %x, want %x", closest[0].ID[:4], bID2[:4])
+	}
+}
+
+func TestHandleMessage_RejectsForgedSignature(t *testing.T) {
+	// Create a single node to receive the forged message.
+	nodes := testNodes(t, 1)
+	a := nodes[0]
+
+	// Generate two keypairs: one for the claimed sender, one for the actual signer.
+	claimedPub, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, wrongPriv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	claimedID := NodeIDFromPublicKey(claimedPub)
+
+	// Build a message that claims to be from claimedPub but signed by wrongPriv.
+	msg := &Message{
+		Type:      MsgPing,
+		ID:        "forged-msg",
+		Timestamp: time.Now().Unix(),
+		Payload:   json.RawMessage(`{}`),
+		Sender: SenderInfo{
+			NodeID:    claimedID,
+			Address:   "127.0.0.1:9999",
+			PublicKey: hex.EncodeToString(claimedPub),
+		},
+	}
+	// Sign with the WRONG key — signature won't verify against claimedPub.
+	msg.Sign(wrongPriv)
+
+	initialSize := a.Table().Size()
+
+	// Directly invoke handleMessage to simulate receiving this message.
+	a.handleMessage(msg, claimedID)
+
+	// The routing table should NOT have grown because the signature is invalid.
+	if a.Table().Size() != initialSize {
+		t.Fatalf("routing table grew after forged message: got %d, want %d",
+			a.Table().Size(), initialSize)
+	}
+}
+
+func TestHandleMessage_RejectsStaleTimestamp(t *testing.T) {
+	// Create a single node to receive the stale message.
+	nodes := testNodes(t, 1)
+	a := nodes[0]
+
+	// Generate a valid keypair for the sender.
+	senderPub, senderPriv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	senderID := NodeIDFromPublicKey(senderPub)
+
+	// Build a correctly signed message, but with a timestamp 10 minutes ago.
+	msg := &Message{
+		Type:      MsgPing,
+		ID:        "stale-msg",
+		Timestamp: time.Now().Unix() - 600, // 10 minutes old
+		Payload:   json.RawMessage(`{}`),
+		Sender: SenderInfo{
+			NodeID:    senderID,
+			Address:   "127.0.0.1:9999",
+			PublicKey: hex.EncodeToString(senderPub),
+		},
+	}
+	// Sign correctly with the real key.
+	sig := ed25519.Sign(senderPriv, msg.signable())
+	msg.Signature = hex.EncodeToString(sig)
+
+	initialSize := a.Table().Size()
+
+	// Directly invoke handleMessage.
+	a.handleMessage(msg, senderID)
+
+	// The routing table should NOT have grown because the timestamp is stale.
+	if a.Table().Size() != initialSize {
+		t.Fatalf("routing table grew after stale message: got %d, want %d",
+			a.Table().Size(), initialSize)
+	}
+}
+
+func TestHandleMessage_AcceptsValidMessage(t *testing.T) {
+	// Create a single node to receive the valid message.
+	nodes := testNodes(t, 1)
+	a := nodes[0]
+
+	// Generate a valid keypair for the sender.
+	senderPub, senderPriv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	senderID := NodeIDFromPublicKey(senderPub)
+
+	// Build a correctly signed message with a current timestamp.
+	msg := &Message{
+		Type:      MsgPing,
+		ID:        "valid-msg",
+		Timestamp: time.Now().Unix(),
+		Payload:   json.RawMessage(`{}`),
+		Sender: SenderInfo{
+			NodeID:    senderID,
+			Address:   "127.0.0.1:9999",
+			PublicKey: hex.EncodeToString(senderPub),
+		},
+	}
+	// Sign correctly with the real key.
+	sig := ed25519.Sign(senderPriv, msg.signable())
+	msg.Signature = hex.EncodeToString(sig)
+
+	initialSize := a.Table().Size()
+
+	// Directly invoke handleMessage.
+	a.handleMessage(msg, senderID)
+
+	// The routing table SHOULD have grown because the message is valid.
+	if a.Table().Size() != initialSize+1 {
+		t.Fatalf("routing table did not grow after valid message: got %d, want %d",
+			a.Table().Size(), initialSize+1)
+	}
+
+	// Verify the sender is in the routing table.
+	closest := a.Table().ClosestN(senderID, 1)
+	if len(closest) == 0 || closest[0].ID != senderID {
+		t.Fatal("sender not found in routing table after valid message")
+	}
+
+	// Verify the public key was stored in the PeerInfo.
+	if closest[0].PublicKey == nil {
+		t.Fatal("sender's public key not stored in PeerInfo")
+	}
+	if hex.EncodeToString(closest[0].PublicKey) != hex.EncodeToString(senderPub) {
+		t.Fatal("stored public key does not match sender's public key")
 	}
 }

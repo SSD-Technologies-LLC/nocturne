@@ -499,13 +499,61 @@ func (n *Node) Bootstrap(addresses []string) error {
 	return nil
 }
 
+// abs64 returns the absolute value of an int64.
+func abs64(x int64) int64 {
+	if x < 0 {
+		return -x
+	}
+	return x
+}
+
+// maxMessageAge is the maximum allowed age (in seconds) for a message
+// timestamp. Messages older than this are rejected as stale.
+const maxMessageAge int64 = 300 // 5 minutes
+
 // handleMessage is the callback registered with the transport. It processes
 // incoming messages by updating the routing table and handling RPCs.
 func (n *Node) handleMessage(msg *Message, from NodeID) {
-	// Update routing table with sender's info on every message.
+	// --- Signature and timestamp verification ---
+
+	// 1. Timestamp freshness check: reject messages with missing or stale
+	//    timestamps (prevents replay attacks).
+	if msg.Timestamp == 0 || abs64(time.Now().Unix()-msg.Timestamp) > maxMessageAge {
+		return // missing, stale, or future-dated timestamp
+	}
+
+	// 2. Verify sender's public key matches claimed NodeID.
+	var senderPubKey ed25519.PublicKey
+	if msg.Sender.PublicKey != "" {
+		pkBytes, err := hex.DecodeString(msg.Sender.PublicKey)
+		if err != nil || len(pkBytes) != ed25519.PublicKeySize {
+			return // invalid public key encoding
+		}
+		senderPubKey = ed25519.PublicKey(pkBytes)
+
+		expectedID := NodeIDFromPublicKey(senderPubKey)
+		if expectedID != msg.Sender.NodeID {
+			return // NodeID does not match public key
+		}
+	}
+
+	// 3. Verify message signature if present.
+	if msg.Signature != "" {
+		if senderPubKey == nil {
+			// Has signature but no public key — can't verify, drop.
+			return
+		}
+		if err := msg.Verify(senderPubKey); err != nil {
+			return // forged or corrupted signature
+		}
+	}
+	// If no signature and no public key, allow (backwards compat).
+
+	// --- Verification passed — update routing table ---
 	n.table.Add(PeerInfo{
 		ID:         msg.Sender.NodeID,
 		Address:    msg.Sender.Address,
+		PublicKey:  senderPubKey,
 		OperatorID: msg.Sender.OperatorID,
 		LastSeen:   time.Now(),
 	})
