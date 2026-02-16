@@ -657,3 +657,32 @@ func TestPublicDownload_SanitizesFilename(t *testing.T) {
 		t.Errorf("Content-Disposition contains injected header: %q", cd)
 	}
 }
+
+// TestSecurityHeaders verifies that all security headers are set on every response.
+func TestSecurityHeaders(t *testing.T) {
+	srv := setupTestServer(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/health", nil)
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+
+	expected := map[string]string{
+		"X-Frame-Options":           "DENY",
+		"X-Content-Type-Options":    "nosniff",
+		"Content-Security-Policy":   "default-src 'self'",
+		"Strict-Transport-Security": "max-age=63072000; includeSubDomains",
+		"Referrer-Policy":           "strict-origin-when-cross-origin",
+		"Permissions-Policy":        "camera=(), microphone=(), geolocation=()",
+	}
+
+	for header, want := range expected {
+		got := rec.Header().Get(header)
+		if got != want {
+			t.Errorf("%s = %q, want %q", header, got, want)
+		}
+	}
+}
