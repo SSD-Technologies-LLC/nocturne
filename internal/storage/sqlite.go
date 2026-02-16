@@ -3,6 +3,7 @@ package storage
 import (
 	"database/sql"
 	"fmt"
+	"strings"
 
 	_ "modernc.org/sqlite"
 )
@@ -69,7 +70,7 @@ CREATE TABLE IF NOT EXISTS files (
     blob BLOB NOT NULL,
     recovery_id TEXT NOT NULL,
     created_at INTEGER NOT NULL,
-    FOREIGN KEY (recovery_id) REFERENCES recovery_keys(id)
+    FOREIGN KEY (recovery_id) REFERENCES recovery_keys(id) ON DELETE CASCADE
 );
 
 CREATE TABLE IF NOT EXISTS links (
@@ -81,7 +82,7 @@ CREATE TABLE IF NOT EXISTS links (
     burned INTEGER DEFAULT 0,
     downloads INTEGER DEFAULT 0,
     created_at INTEGER NOT NULL,
-    FOREIGN KEY (file_id) REFERENCES files(id)
+    FOREIGN KEY (file_id) REFERENCES files(id) ON DELETE CASCADE
 );
 
 CREATE TABLE IF NOT EXISTS nodes (
@@ -101,8 +102,8 @@ CREATE TABLE IF NOT EXISTS shards (
     node_id TEXT NOT NULL,
     size INTEGER NOT NULL,
     checksum TEXT NOT NULL,
-    FOREIGN KEY (file_id) REFERENCES files(id),
-    FOREIGN KEY (node_id) REFERENCES nodes(id)
+    FOREIGN KEY (file_id) REFERENCES files(id) ON DELETE CASCADE,
+    FOREIGN KEY (node_id) REFERENCES nodes(id) ON DELETE CASCADE
 );
 
 CREATE TABLE IF NOT EXISTS operators (
@@ -123,7 +124,7 @@ CREATE TABLE IF NOT EXISTS agent_keys (
     label TEXT,
     last_seen INTEGER,
     created_at INTEGER NOT NULL,
-    FOREIGN KEY (operator_id) REFERENCES operators(id)
+    FOREIGN KEY (operator_id) REFERENCES operators(id) ON DELETE CASCADE
 );
 
 CREATE TABLE IF NOT EXISTS knowledge (
@@ -142,8 +143,8 @@ CREATE TABLE IF NOT EXISTS knowledge (
     ttl INTEGER,
     created_at INTEGER NOT NULL,
     signature TEXT NOT NULL,
-    FOREIGN KEY (agent_id) REFERENCES agent_keys(id),
-    FOREIGN KEY (operator_id) REFERENCES operators(id)
+    FOREIGN KEY (agent_id) REFERENCES agent_keys(id) ON DELETE CASCADE,
+    FOREIGN KEY (operator_id) REFERENCES operators(id) ON DELETE CASCADE
 );
 
 CREATE TABLE IF NOT EXISTS compute_tasks (
@@ -206,8 +207,132 @@ CREATE INDEX IF NOT EXISTS idx_votes_entry ON votes(entry_id);
 CREATE INDEX IF NOT EXISTS idx_votes_phase ON votes(phase);
 CREATE INDEX IF NOT EXISTS idx_anomaly_operator ON anomaly_logs(operator_id);
 CREATE INDEX IF NOT EXISTS idx_agent_keys_operator ON agent_keys(operator_id);`
-	_, err := d.db.Exec(schema)
-	return err
+	if _, err := d.db.Exec(schema); err != nil {
+		return err
+	}
+	return d.migrateCascade()
+}
+
+// migrateCascade upgrades existing tables to use ON DELETE CASCADE on foreign keys.
+// SQLite's CREATE TABLE IF NOT EXISTS won't modify existing tables, so we use
+// the rename-and-recreate pattern: create _new table with CASCADE, copy data,
+// drop old, rename new. Child tables are processed first to avoid FK violations.
+func (d *DB) migrateCascade() error {
+	// Check if CASCADE is already present by inspecting the links table schema.
+	var linkSQL string
+	err := d.db.QueryRow(
+		`SELECT sql FROM sqlite_master WHERE type='table' AND name='links'`,
+	).Scan(&linkSQL)
+	if err != nil {
+		// Table might not exist yet (fresh DB handled by migrate()).
+		return nil
+	}
+	if strings.Contains(linkSQL, "ON DELETE CASCADE") {
+		return nil // Already migrated.
+	}
+
+	// Temporarily disable foreign keys for the migration.
+	if _, err := d.db.Exec("PRAGMA foreign_keys = OFF"); err != nil {
+		return fmt.Errorf("migrate cascade: disable FK: %w", err)
+	}
+	defer d.db.Exec("PRAGMA foreign_keys = ON")
+
+	// Process child tables first to avoid FK violations during migration.
+	migrations := []struct {
+		name   string
+		create string
+	}{
+		{
+			name: "knowledge",
+			create: `CREATE TABLE knowledge_new (
+    id TEXT PRIMARY KEY,
+    agent_id TEXT NOT NULL,
+    operator_id TEXT NOT NULL,
+    type TEXT NOT NULL,
+    domain TEXT NOT NULL,
+    content TEXT NOT NULL,
+    confidence REAL DEFAULT 0.5,
+    sources TEXT,
+    supersedes TEXT,
+    votes_up INTEGER DEFAULT 0,
+    votes_down INTEGER DEFAULT 0,
+    verified_by TEXT,
+    ttl INTEGER,
+    created_at INTEGER NOT NULL,
+    signature TEXT NOT NULL,
+    FOREIGN KEY (agent_id) REFERENCES agent_keys(id) ON DELETE CASCADE,
+    FOREIGN KEY (operator_id) REFERENCES operators(id) ON DELETE CASCADE
+)`,
+		},
+		{
+			name: "agent_keys",
+			create: `CREATE TABLE agent_keys_new (
+    id TEXT PRIMARY KEY,
+    operator_id TEXT NOT NULL,
+    public_key BLOB NOT NULL,
+    label TEXT,
+    last_seen INTEGER,
+    created_at INTEGER NOT NULL,
+    FOREIGN KEY (operator_id) REFERENCES operators(id) ON DELETE CASCADE
+)`,
+		},
+		{
+			name: "shards",
+			create: `CREATE TABLE shards_new (
+    id TEXT PRIMARY KEY,
+    file_id TEXT NOT NULL,
+    shard_index INTEGER NOT NULL,
+    node_id TEXT NOT NULL,
+    size INTEGER NOT NULL,
+    checksum TEXT NOT NULL,
+    FOREIGN KEY (file_id) REFERENCES files(id) ON DELETE CASCADE,
+    FOREIGN KEY (node_id) REFERENCES nodes(id) ON DELETE CASCADE
+)`,
+		},
+		{
+			name: "links",
+			create: `CREATE TABLE links_new (
+    id TEXT PRIMARY KEY,
+    file_id TEXT NOT NULL,
+    mode TEXT NOT NULL,
+    password_hash BLOB NOT NULL,
+    expires_at INTEGER,
+    burned INTEGER DEFAULT 0,
+    downloads INTEGER DEFAULT 0,
+    created_at INTEGER NOT NULL,
+    FOREIGN KEY (file_id) REFERENCES files(id) ON DELETE CASCADE
+)`,
+		},
+		{
+			name: "files",
+			create: `CREATE TABLE files_new (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    size INTEGER NOT NULL,
+    mime_type TEXT,
+    cipher TEXT NOT NULL,
+    salt BLOB NOT NULL,
+    nonce BLOB NOT NULL,
+    blob BLOB NOT NULL,
+    recovery_id TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    FOREIGN KEY (recovery_id) REFERENCES recovery_keys(id) ON DELETE CASCADE
+)`,
+		},
+	}
+
+	for _, m := range migrations {
+		stmts := fmt.Sprintf(`%s;
+INSERT INTO %s_new SELECT * FROM %s;
+DROP TABLE %s;
+ALTER TABLE %s_new RENAME TO %s;`,
+			m.create, m.name, m.name, m.name, m.name, m.name)
+		if _, err := d.db.Exec(stmts); err != nil {
+			return fmt.Errorf("migrate cascade %s: %w", m.name, err)
+		}
+	}
+
+	return nil
 }
 
 // --- Recovery Key CRUD ---

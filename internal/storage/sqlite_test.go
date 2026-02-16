@@ -294,6 +294,60 @@ func TestDeleteFileWithLinks(t *testing.T) {
 	}
 }
 
+func TestFKCascadeDeleteFile(t *testing.T) {
+	db := testDB(t)
+	rk := seedRecoveryKey(t, db)
+
+	f := &File{
+		ID:         "file-cascade",
+		Name:       "cascade.txt",
+		Size:       128,
+		Cipher:     "aes-256-gcm",
+		Salt:       []byte("s"),
+		Nonce:      []byte("n"),
+		Blob:       []byte("b"),
+		RecoveryID: rk.ID,
+		CreatedAt:  time.Now().Unix(),
+	}
+	if err := db.CreateFile(f); err != nil {
+		t.Fatalf("CreateFile: %v", err)
+	}
+
+	// Create two links for the file.
+	for i := 0; i < 2; i++ {
+		l := &Link{
+			ID:           fmt.Sprintf("link-cascade-%d", i),
+			FileID:       f.ID,
+			Mode:         "open",
+			PasswordHash: []byte("h"),
+			CreatedAt:    time.Now().Unix(),
+		}
+		if err := db.CreateLink(l); err != nil {
+			t.Fatalf("CreateLink[%d]: %v", i, err)
+		}
+	}
+
+	// Delete the file directly (NOT DeleteFileWithLinks).
+	// With CASCADE, associated links should be automatically deleted.
+	if err := db.DeleteFile(f.ID); err != nil {
+		t.Fatalf("DeleteFile: %v", err)
+	}
+
+	// File should be gone.
+	if _, err := db.GetFile(f.ID); err == nil {
+		t.Fatal("expected error getting deleted file, got nil")
+	}
+
+	// Links should be automatically deleted by CASCADE.
+	links, err := db.ListLinksForFile(f.ID)
+	if err != nil {
+		t.Fatalf("ListLinksForFile after cascade delete: %v", err)
+	}
+	if len(links) != 0 {
+		t.Errorf("expected 0 links after cascade delete, got %d", len(links))
+	}
+}
+
 // --- Task 4: Link CRUD tests ---
 
 // seedFile creates a recovery key and file for link tests.
