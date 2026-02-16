@@ -324,6 +324,34 @@ func (d *DB) DeleteFile(id string) error {
 	return nil
 }
 
+// DeleteFileWithLinks removes a file and all its associated links in a single
+// transaction, preventing partial-delete inconsistencies.
+func (d *DB) DeleteFileWithLinks(fileID string) error {
+	tx, err := d.db.Begin()
+	if err != nil {
+		return fmt.Errorf("delete file with links: begin tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	if _, err := tx.Exec(`DELETE FROM links WHERE file_id = ?`, fileID); err != nil {
+		return fmt.Errorf("delete file with links: delete links: %w", err)
+	}
+
+	res, err := tx.Exec(`DELETE FROM files WHERE id = ?`, fileID)
+	if err != nil {
+		return fmt.Errorf("delete file with links: delete file: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("delete file with links: rows affected: %w", err)
+	}
+	if n == 0 {
+		return fmt.Errorf("delete file with links: %w", sql.ErrNoRows)
+	}
+
+	return tx.Commit()
+}
+
 // --- Link CRUD ---
 
 // boolToInt converts a bool to an integer (0 or 1) for SQLite storage.

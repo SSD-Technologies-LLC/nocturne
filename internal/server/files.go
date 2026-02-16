@@ -163,20 +163,7 @@ func (s *Server) handleDeleteFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Delete associated links first
-	links, err := s.db.ListLinksForFile(id)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to list links")
-		return
-	}
-	for _, l := range links {
-		if err := s.db.DeleteLink(l.ID); err != nil {
-			writeError(w, http.StatusInternalServerError, "failed to delete link")
-			return
-		}
-	}
-
-	if err := s.db.DeleteFile(id); err != nil {
+	if err := s.db.DeleteFileWithLinks(id); err != nil {
 		writeError(w, http.StatusNotFound, "file not found")
 		return
 	}

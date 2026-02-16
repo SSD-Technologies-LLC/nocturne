@@ -149,6 +149,34 @@ func (d *DB) DeleteOperator(id string) error {
 	return nil
 }
 
+// DeleteOperatorCascade removes an operator and all its agent keys in a single
+// transaction, preventing partial-delete inconsistencies.
+func (d *DB) DeleteOperatorCascade(id string) error {
+	tx, err := d.db.Begin()
+	if err != nil {
+		return fmt.Errorf("delete operator cascade: begin tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	if _, err := tx.Exec(`DELETE FROM agent_keys WHERE operator_id = ?`, id); err != nil {
+		return fmt.Errorf("delete operator cascade: delete agent keys: %w", err)
+	}
+
+	res, err := tx.Exec(`DELETE FROM operators WHERE id = ?`, id)
+	if err != nil {
+		return fmt.Errorf("delete operator cascade: delete operator: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("delete operator cascade: rows affected: %w", err)
+	}
+	if n == 0 {
+		return fmt.Errorf("delete operator cascade: %w", sql.ErrNoRows)
+	}
+
+	return tx.Commit()
+}
+
 // --- Agent Key CRUD ---
 
 // CreateAgentKey inserts a new agent key, enforcing the operator's max_agents limit.
