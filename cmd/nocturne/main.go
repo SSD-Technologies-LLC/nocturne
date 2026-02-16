@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/ssd-technologies/nocturne/internal/server"
 	"github.com/ssd-technologies/nocturne/internal/storage"
@@ -41,6 +42,11 @@ func main() {
 	srv := server.New(db, secret)
 	srv.StartWorkers(ctx)
 
+	httpServer := &http.Server{
+		Addr:    ":" + port,
+		Handler: srv,
+	}
+
 	// Graceful shutdown on SIGINT/SIGTERM.
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
@@ -48,8 +54,17 @@ func main() {
 		<-sigCh
 		log.Println("Shutting down...")
 		cancel()
+		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer shutdownCancel()
+		if err := httpServer.Shutdown(shutdownCtx); err != nil {
+			log.Printf("HTTP shutdown error: %v", err)
+		}
 	}()
 
 	fmt.Printf("Nocturne running on http://localhost:%s\n", port)
-	log.Fatal(http.ListenAndServe(":"+port, srv))
+	if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		log.Fatal(err)
+	}
+
+	srv.Close()
 }

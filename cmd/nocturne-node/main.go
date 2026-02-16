@@ -264,10 +264,11 @@ func cmdConnect() {
 	fmt.Printf("Connected to Nocturne mesh. Node ID: %s\n", nodeID)
 	fmt.Printf("Shard server listening on %s\n", shardAddr)
 
-	// 10. Start heartbeat loop.
-	heartbeatDone := make(chan struct{})
+	// 10. Shared shutdown channel for background goroutines.
+	shutdownCh := make(chan struct{})
+
+	// 11. Start heartbeat loop.
 	go func() {
-		defer close(heartbeatDone)
 		ticker := time.NewTicker(heartbeatInterval)
 		defer ticker.Stop()
 		for {
@@ -281,14 +282,13 @@ func cmdConnect() {
 				if err := conn.WriteJSON(hbMsg); err != nil {
 					return
 				}
-			case <-heartbeatDone:
+			case <-shutdownCh:
 				return
 			}
 		}
 	}()
 
-	// 11. Write stats periodically.
-	statsDone := make(chan struct{})
+	// 12. Write stats periodically.
 	go func() {
 		ticker := time.NewTicker(5 * time.Second)
 		defer ticker.Stop()
@@ -306,7 +306,7 @@ func cmdConnect() {
 				}
 				data, _ := json.Marshal(stats)
 				_ = os.WriteFile(statsFile, data, 0600)
-			case <-statsDone:
+			case <-shutdownCh:
 				return
 			}
 		}
@@ -341,7 +341,7 @@ func cmdConnect() {
 	_ = os.WriteFile(statsFile, data, 0600)
 
 	// Cleanup.
-	close(statsDone)
+	close(shutdownCh)
 	listener.Close()
 	os.Remove(pidFile)
 

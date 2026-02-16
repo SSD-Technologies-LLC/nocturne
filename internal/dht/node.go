@@ -17,6 +17,7 @@ type Config struct {
 	K              int      // bucket size (default 20)
 	Alpha          int      // concurrency (default 3)
 	Port           int      // listen port (0 = random)
+	BindAddr       string   // bind address (default "0.0.0.0", use "127.0.0.1" for local-only)
 	BootstrapPeers []string // initial peer addresses
 	StorePath      string   // SQLite path for local store (empty = :memory:)
 }
@@ -41,7 +42,7 @@ type Node struct {
 
 // NewNode creates a new DHT node with the given configuration. If
 // Config.StorePath is empty, an in-memory SQLite database is used.
-func NewNode(cfg Config) *Node {
+func NewNode(cfg Config) (*Node, error) {
 	id := NodeIDFromPublicKey(cfg.PublicKey)
 	if cfg.K == 0 {
 		cfg.K = 20
@@ -56,10 +57,7 @@ func NewNode(cfg Config) *Node {
 	}
 	store, err := NewLocalStore(storePath)
 	if err != nil {
-		// In-memory should never fail; if it does, panic is acceptable
-		// during initialization. For production paths the caller should
-		// pre-validate the path.
-		panic(fmt.Sprintf("dht: init local store: %v", err))
+		return nil, fmt.Errorf("init local store: %w", err)
 	}
 
 	n := &Node{
@@ -71,12 +69,16 @@ func NewNode(cfg Config) *Node {
 		pending:   make(map[string]chan *Message),
 	}
 	n.transport.OnMessage(n.handleMessage)
-	return n
+	return n, nil
 }
 
 // Start listens on the configured port and bootstraps if peers are given.
 func (n *Node) Start() error {
-	if err := n.transport.Listen(n.config.Port); err != nil {
+	bindAddr := n.config.BindAddr
+	if bindAddr == "" {
+		bindAddr = "0.0.0.0"
+	}
+	if err := n.transport.Listen(bindAddr, n.config.Port); err != nil {
 		return err
 	}
 	if len(n.config.BootstrapPeers) > 0 {
@@ -357,8 +359,11 @@ func (n *Node) findValueRPC(peer PeerInfo, key NodeID) ([]byte, bool, []PeerInfo
 	return nil, false, fvr.Peers, nil
 }
 
-// Close shuts down the node, its transport, and the local store.
+// Close shuts down the node, its transport, gossiper, and the local store.
 func (n *Node) Close() error {
+	if n.gossiper != nil {
+		n.gossiper.Close()
+	}
 	n.transport.Close()
 	if n.store != nil {
 		return n.store.Close()

@@ -41,17 +41,32 @@ type Gossiper struct {
 	seenTTL  time.Duration
 	handlers map[GossipType]GossipHandler
 	maxHops  int
+	done     chan struct{}
 }
 
 // NewGossiper creates a gossiper attached to a node.
 func NewGossiper(node *Node) *Gossiper {
-	return &Gossiper{
+	g := &Gossiper{
 		node:     node,
 		seen:     make(map[string]time.Time),
 		seenTTL:  10 * time.Minute,
 		handlers: make(map[GossipType]GossipHandler),
 		maxHops:  10,
+		done:     make(chan struct{}),
 	}
+	go func() {
+		ticker := time.NewTicker(time.Minute)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				g.PruneSeen()
+			case <-g.done:
+				return
+			}
+		}
+	}()
+	return g
 }
 
 // OnGossip registers a handler for a specific gossip type.
@@ -182,6 +197,11 @@ func (g *Gossiper) hasSeen(id string) bool {
 		return false
 	}
 	return true
+}
+
+// Close stops the background pruning goroutine.
+func (g *Gossiper) Close() {
+	close(g.done)
 }
 
 // PruneSeen removes expired entries from the seen set and returns the number

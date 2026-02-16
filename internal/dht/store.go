@@ -131,23 +131,18 @@ func (s *LocalStore) ListKeys() ([]NodeID, error) {
 }
 
 // PutVersioned stores a value and returns the new version (starts at 1,
-// increments on each call). This is used with CompareAndSwap for optimistic
-// concurrency control.
+// increments on each call). Uses an atomic UPSERT to prevent race conditions
+// between concurrent callers.
 func (s *LocalStore) PutVersioned(key NodeID, value []byte, ttl time.Duration) (uint64, error) {
 	keyHex := hex.EncodeToString(key[:])
 	expiresAt := time.Now().Add(ttl).UnixMilli()
-	var currentVersion uint64
-	err := s.db.QueryRow(`SELECT version FROM dht_entries WHERE key_hex = ?`, keyHex).Scan(&currentVersion)
-	if err == sql.ErrNoRows {
-		currentVersion = 0
-	} else if err != nil {
-		return 0, err
-	}
-	newVersion := currentVersion + 1
-	_, err = s.db.Exec(
-		`INSERT OR REPLACE INTO dht_entries (key_hex, value, expires_at, version) VALUES (?, ?, ?, ?)`,
-		keyHex, value, expiresAt, newVersion,
-	)
+	var newVersion uint64
+	err := s.db.QueryRow(
+		`INSERT INTO dht_entries (key_hex, value, expires_at, version) VALUES (?, ?, ?, 1)
+		 ON CONFLICT(key_hex) DO UPDATE SET value = excluded.value, expires_at = excluded.expires_at, version = dht_entries.version + 1
+		 RETURNING version`,
+		keyHex, value, expiresAt,
+	).Scan(&newVersion)
 	return newVersion, err
 }
 

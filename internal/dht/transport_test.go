@@ -16,7 +16,7 @@ func testTransport(t *testing.T) *Transport {
 	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
 	nodeID := NodeIDFromPublicKey(pub)
 	tr := NewTransport(nodeID, priv)
-	if err := tr.Listen(0); err != nil {
+	if err := tr.Listen("127.0.0.1", 0); err != nil {
 		t.Fatalf("listen: %v", err)
 	}
 	t.Cleanup(func() { tr.Close() })
@@ -243,7 +243,7 @@ func TestTransportClose(t *testing.T) {
 	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
 	nodeID := NodeIDFromPublicKey(pub)
 	a := NewTransport(nodeID, priv)
-	if err := a.Listen(0); err != nil {
+	if err := a.Listen("127.0.0.1", 0); err != nil {
 		t.Fatalf("listen: %v", err)
 	}
 

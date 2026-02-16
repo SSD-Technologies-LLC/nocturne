@@ -25,8 +25,12 @@ func testNodes(t *testing.T, n int) []*Node {
 			K:          20,
 			Alpha:      3,
 			Port:       0, // random port
+			BindAddr:   "127.0.0.1",
 		}
-		node := NewNode(cfg)
+		node, err := NewNode(cfg)
+		if err != nil {
+			t.Fatalf("create node %d: %v", i, err)
+		}
 		if err := node.Start(); err != nil {
 			t.Fatalf("start node %d: %v", i, err)
 		}
@@ -194,9 +198,13 @@ func TestNodeBootstrap(t *testing.T) {
 		K:              20,
 		Alpha:          3,
 		Port:           0,
+		BindAddr:       "127.0.0.1",
 		BootstrapPeers: []string{a.Addr()},
 	}
-	b := NewNode(cfg)
+	b, err := NewNode(cfg)
+	if err != nil {
+		t.Fatalf("create bootstrap node: %v", err)
+	}
 	if err := b.Start(); err != nil {
 		t.Fatalf("start bootstrap node: %v", err)
 	}

@@ -54,11 +54,12 @@ func NewTransport(self NodeID, privKey ed25519.PrivateKey) *Transport {
 	}
 }
 
-// Listen starts a WebSocket server on the given port. Use port 0 to listen on
-// a random available port. Incoming connections on /ws are upgraded to
-// WebSocket and registered once the remote peer identifies itself.
-func (t *Transport) Listen(port int) error {
-	ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))
+// Listen starts a WebSocket server on the given bind address and port. Use
+// port 0 to listen on a random available port. Incoming connections on /ws
+// are upgraded to WebSocket and registered once the remote peer identifies
+// itself.
+func (t *Transport) Listen(bindAddr string, port int) error {
+	ln, err := net.Listen("tcp", fmt.Sprintf("%s:%d", bindAddr, port))
 	if err != nil {
 		return fmt.Errorf("listen: %w", err)
 	}

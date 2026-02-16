@@ -51,6 +51,24 @@ func writeError(w http.ResponseWriter, status int, msg string) {
 	writeJSON(w, status, map[string]string{"error": msg})
 }
 
+// maxAPIBodySize is the maximum allowed request body for LocalAPI endpoints.
+const maxAPIBodySize = 10 << 20 // 10 MB
+
+// readBody reads and returns the request body, enforcing a size limit.
+// Returns nil, false if the body exceeds the limit or cannot be read.
+func readBody(w http.ResponseWriter, r *http.Request) ([]byte, bool) {
+	body, err := io.ReadAll(io.LimitReader(r.Body, maxAPIBodySize+1))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "failed to read body")
+		return nil, false
+	}
+	if len(body) > maxAPIBodySize {
+		writeError(w, http.StatusRequestEntityTooLarge, "request body too large")
+		return nil, false
+	}
+	return body, true
+}
+
 // handleHealth responds with node health status.
 // GET /local/health
 func (api *LocalAPI) handleHealth(w http.ResponseWriter, r *http.Request) {
@@ -110,9 +128,8 @@ func (api *LocalAPI) handleKnowledge(w http.ResponseWriter, r *http.Request) {
 }
 
 func (api *LocalAPI) publishKnowledge(w http.ResponseWriter, r *http.Request) {
-	body, err := io.ReadAll(r.Body)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "failed to read body")
+	body, ok := readBody(w, r)
+	if !ok {
 		return
 	}
 
@@ -203,9 +220,8 @@ func (api *LocalAPI) handleKnowledgeVote(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	body, err := io.ReadAll(r.Body)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "failed to read body")
+	body, ok := readBody(w, r)
+	if !ok {
 		return
 	}
 
@@ -319,9 +335,8 @@ func (api *LocalAPI) handleComputeClaim(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	body, err := io.ReadAll(r.Body)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "failed to read body")
+	body, ok := readBody(w, r)
+	if !ok {
 		return
 	}
 
@@ -368,9 +383,8 @@ func (api *LocalAPI) handleComputeByID(w http.ResponseWriter, r *http.Request) {
 }
 
 func (api *LocalAPI) submitTaskResult(w http.ResponseWriter, r *http.Request, taskID string) {
-	body, err := io.ReadAll(r.Body)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "failed to read body")
+	body, ok := readBody(w, r)
+	if !ok {
 		return
 	}
 
@@ -410,9 +424,8 @@ func (api *LocalAPI) handleAwareness(w http.ResponseWriter, r *http.Request) {
 }
 
 func (api *LocalAPI) storeAwareness(w http.ResponseWriter, r *http.Request) {
-	body, err := io.ReadAll(r.Body)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "failed to read body")
+	body, ok := readBody(w, r)
+	if !ok {
 		return
 	}
 

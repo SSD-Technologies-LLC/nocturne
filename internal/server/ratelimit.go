@@ -14,6 +14,7 @@ type rateLimiter struct {
 	visitors map[string]*visitor
 	rate     int           // max requests per window
 	window   time.Duration // window duration
+	done     chan struct{}
 }
 
 // visitor tracks request counts within the current window for a single IP.
@@ -29,14 +30,26 @@ func newRateLimiter(rate int, window time.Duration) *rateLimiter {
 		visitors: make(map[string]*visitor),
 		rate:     rate,
 		window:   window,
+		done:     make(chan struct{}),
 	}
 	go func() {
+		ticker := time.NewTicker(time.Minute)
+		defer ticker.Stop()
 		for {
-			time.Sleep(time.Minute)
-			rl.cleanup()
+			select {
+			case <-ticker.C:
+				rl.cleanup()
+			case <-rl.done:
+				return
+			}
 		}
 	}()
 	return rl
+}
+
+// close stops the background cleanup goroutine.
+func (rl *rateLimiter) close() {
+	close(rl.done)
 }
 
 // allow returns true if the IP has not exceeded its rate limit.
@@ -66,15 +79,17 @@ func (rl *rateLimiter) cleanup() {
 	}
 }
 
-// getIP extracts the client IP from a request, respecting X-Forwarded-For
-// for proxied deployments.
+// getIP extracts the client IP from a request. X-Forwarded-For is only
+// trusted when the direct connection comes from localhost (reverse proxy).
 func getIP(r *http.Request) string {
-	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-		if idx := strings.Index(xff, ","); idx != -1 {
-			return strings.TrimSpace(xff[:idx])
-		}
-		return strings.TrimSpace(xff)
-	}
 	host, _, _ := net.SplitHostPort(r.RemoteAddr)
+	if host == "127.0.0.1" || host == "::1" {
+		if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+			if idx := strings.Index(xff, ","); idx != -1 {
+				return strings.TrimSpace(xff[:idx])
+			}
+			return strings.TrimSpace(xff)
+		}
+	}
 	return host
 }

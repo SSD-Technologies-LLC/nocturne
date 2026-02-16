@@ -233,7 +233,9 @@ func (n *Node) updateTaskIndex(taskID string, add bool) error {
 
 		var index TaskIndex
 		if data != nil {
-			json.Unmarshal(data, &index)
+			if err := json.Unmarshal(data, &index); err != nil {
+			return fmt.Errorf("unmarshal task index: %w", err)
+		}
 		}
 
 		if add {

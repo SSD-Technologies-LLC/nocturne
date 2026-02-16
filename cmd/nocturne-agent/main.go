@@ -135,7 +135,10 @@ func cmdStart(args []string) {
 		cfg.BootstrapPeers = strings.Split(*bootstrap, ",")
 	}
 
-	node := dht.NewNode(cfg)
+	node, err := dht.NewNode(cfg)
+	if err != nil {
+		log.Fatalf("Failed to create DHT node: %v", err)
+	}
 
 	// Set up gossiper.
 	gossiper := dht.NewGossiper(node)
