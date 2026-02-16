@@ -13,19 +13,21 @@ import (
 
 // Server is the main HTTP server for the Nocturne API.
 type Server struct {
-	db      *storage.DB
-	secret  string
-	mux     *http.ServeMux
-	limiter *rateLimiter
+	db            *storage.DB
+	secret        string
+	mux           *http.ServeMux
+	limiter       *rateLimiter
+	strictLimiter *rateLimiter
 }
 
 // New creates a new Server with all routes registered.
 func New(db *storage.DB, secret string) *Server {
 	s := &Server{
-		db:      db,
-		secret:  secret,
-		mux:     http.NewServeMux(),
-		limiter: newRateLimiter(120, time.Minute),
+		db:            db,
+		secret:        secret,
+		mux:           http.NewServeMux(),
+		limiter:       newRateLimiter(120, time.Minute),
+		strictLimiter: newRateLimiter(20, time.Minute),
 	}
 	s.routes()
 	return s
@@ -54,6 +56,17 @@ func (s *Server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
+// withRateLimit wraps a handler with per-IP rate limiting.
+func withRateLimit(rl *rateLimiter, next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if !rl.allow(getIP(r)) {
+			writeError(w, http.StatusTooManyRequests, "rate limit exceeded")
+			return
+		}
+		next(w, r)
+	}
+}
+
 // routes registers all HTTP routes on the server mux.
 func (s *Server) routes() {
 	// Health (no auth)
@@ -73,9 +86,9 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /api/recovery/setup", s.requireAuth(s.handleRecoverySetup))
 	s.mux.HandleFunc("POST /api/recovery/recover", s.requireAuth(s.handleRecoveryRecover))
 
-	// Public API (no auth — these have their own password checks)
-	s.mux.HandleFunc("POST /s/{slug}/verify", s.handlePublicVerify)
-	s.mux.HandleFunc("POST /s/{slug}/download", s.handlePublicDownload)
+	// Public API (rate limited, no auth — these have their own password checks)
+	s.mux.HandleFunc("POST /s/{slug}/verify", withRateLimit(s.strictLimiter, s.handlePublicVerify))
+	s.mux.HandleFunc("POST /s/{slug}/download", withRateLimit(s.strictLimiter, s.handlePublicDownload))
 
 	// Static files — embedded frontend
 	dashboardFS, _ := fs.Sub(web.FS, "dashboard")

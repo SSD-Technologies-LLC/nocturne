@@ -539,6 +539,38 @@ func TestAuth_HealthBypassesAuth(t *testing.T) {
 	}
 }
 
+func TestRateLimit_PublicEndpoint(t *testing.T) {
+	srv := setupTestServer(t)
+
+	// Upload a file and create a link first (these need auth).
+	fileResult := uploadTestFile(t, srv, "ratelimit.txt", "content", "pass")
+	fileID := fileResult["id"].(string)
+	linkResult := createTestLink(t, srv, fileID, "linkpass", "persistent")
+	slug := linkResult["slug"].(string)
+
+	// Exhaust the strict rate limit (20 requests).
+	for i := 0; i < 20; i++ {
+		body, _ := json.Marshal(map[string]string{"link_password": "wrong"})
+		req := httptest.NewRequest(http.MethodPost, "/s/"+slug+"/verify", bytes.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		req.RemoteAddr = "10.0.0.1:1234"
+		rec := httptest.NewRecorder()
+		srv.ServeHTTP(rec, req)
+	}
+
+	// 21st request should be rate limited.
+	body, _ := json.Marshal(map[string]string{"link_password": "wrong"})
+	req := httptest.NewRequest(http.MethodPost, "/s/"+slug+"/verify", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.RemoteAddr = "10.0.0.1:1234"
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("rate limit: status = %d, want %d", rec.Code, http.StatusTooManyRequests)
+	}
+}
+
 func TestAuth_PublicRoutesNoAuth(t *testing.T) {
 	srv := setupTestServer(t)
 	body, _ := json.Marshal(map[string]string{"link_password": "x"})
