@@ -4,6 +4,8 @@ import (
 	"crypto/ed25519"
 	"encoding/hex"
 	"fmt"
+	"log"
+	"os"
 	"strconv"
 	"time"
 )
@@ -69,12 +71,35 @@ type TrustValidator struct {
 // maxTrustDepth is the maximum recursion depth for transitive trust chains.
 const maxTrustDepth = 3
 
+// IsPlaceholderKey reports whether key is the all-zero placeholder genesis key.
+func IsPlaceholderKey(key ed25519.PublicKey) bool {
+	for _, b := range key {
+		if b != 0 {
+			return false
+		}
+	}
+	return true
+}
+
 // DefaultGenesis returns a genesis config with SSD Technologies as the founding
-// operator. The public key is a placeholder; the real key will be set at build time.
+// operator. When the NOCTURNE_GENESIS_KEY environment variable is set to a valid
+// hex-encoded 32-byte Ed25519 public key, that key is used. Otherwise a
+// placeholder all-zero key is used and a warning is logged.
 func DefaultGenesis() *Genesis {
-	// Placeholder key: 32 zero bytes. Replaced at build time with the real
-	// SSD Technologies operator key.
-	placeholderKey := make(ed25519.PublicKey, ed25519.PublicKeySize)
+	var genesisKey ed25519.PublicKey
+
+	if envKey := os.Getenv("NOCTURNE_GENESIS_KEY"); envKey != "" {
+		decoded, err := hex.DecodeString(envKey)
+		if err != nil || len(decoded) != ed25519.PublicKeySize {
+			log.Printf("WARNING: NOCTURNE_GENESIS_KEY is invalid (expected %d hex bytes), using placeholder", ed25519.PublicKeySize)
+			genesisKey = make(ed25519.PublicKey, ed25519.PublicKeySize)
+		} else {
+			genesisKey = ed25519.PublicKey(decoded)
+		}
+	} else {
+		log.Println("WARNING: NOCTURNE_GENESIS_KEY not set, using placeholder (unsafe for production)")
+		genesisKey = make(ed25519.PublicKey, ed25519.PublicKeySize)
+	}
 
 	return &Genesis{
 		Version:             1,
@@ -82,7 +107,7 @@ func DefaultGenesis() *Genesis {
 		RevocationThreshold: 3,
 		Operators: []GenesisOperator{
 			{
-				PublicKey: placeholderKey,
+				PublicKey: genesisKey,
 				Label:     "SSD Technologies",
 			},
 		},

@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"bytes"
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/hex"
@@ -804,5 +805,37 @@ func TestDuplicateEndorsementsFromSameOperator(t *testing.T) {
 	err := v.ValidateCertificate(cert)
 	if err == nil {
 		t.Fatal("expected error: duplicate endorsements from same operator should be deduplicated")
+	}
+}
+
+func TestDefaultGenesis_EnvironmentVariable(t *testing.T) {
+	pub, _, _ := ed25519.GenerateKey(rand.Reader)
+	hexKey := hex.EncodeToString(pub)
+	t.Setenv("NOCTURNE_GENESIS_KEY", hexKey)
+	g := DefaultGenesis()
+	if len(g.Operators) != 1 {
+		t.Fatalf("operators = %d, want 1", len(g.Operators))
+	}
+	if !bytes.Equal(g.Operators[0].PublicKey, pub) {
+		t.Error("genesis public key should match env var")
+	}
+}
+
+func TestDefaultGenesis_PlaceholderWhenUnset(t *testing.T) {
+	t.Setenv("NOCTURNE_GENESIS_KEY", "")
+	g := DefaultGenesis()
+	if !IsPlaceholderKey(g.Operators[0].PublicKey) {
+		t.Error("should be placeholder when env var is empty")
+	}
+}
+
+func TestIsPlaceholderKey(t *testing.T) {
+	zero := make(ed25519.PublicKey, ed25519.PublicKeySize)
+	if !IsPlaceholderKey(zero) {
+		t.Error("all-zero key should be placeholder")
+	}
+	pub, _, _ := ed25519.GenerateKey(rand.Reader)
+	if IsPlaceholderKey(pub) {
+		t.Error("real key should not be placeholder")
 	}
 }
