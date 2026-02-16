@@ -61,6 +61,7 @@ func uploadTestFile(t *testing.T, srv *Server, filename, content, password strin
 
 	req := httptest.NewRequest(http.MethodPost, "/api/files", &buf)
 	req.Header.Set("Content-Type", writer.FormDataContentType())
+	req.Header.Set("Authorization", "Bearer test-secret")
 	rec := httptest.NewRecorder()
 
 	srv.ServeHTTP(rec, req)
@@ -88,6 +89,7 @@ func createTestLink(t *testing.T, srv *Server, fileID, password, mode string) ma
 
 	req := httptest.NewRequest(http.MethodPost, "/api/files/"+fileID+"/link", bytes.NewReader(bodyBytes))
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer test-secret")
 	rec := httptest.NewRecorder()
 
 	srv.ServeHTTP(rec, req)
@@ -133,6 +135,7 @@ func TestListFiles_Empty(t *testing.T) {
 	srv := setupTestServer(t)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/files", nil)
+	req.Header.Set("Authorization", "Bearer test-secret")
 	rec := httptest.NewRecorder()
 
 	srv.ServeHTTP(rec, req)
@@ -175,6 +178,7 @@ func TestUploadFile(t *testing.T) {
 
 	// Verify the file shows up in the list
 	req := httptest.NewRequest(http.MethodGet, "/api/files", nil)
+	req.Header.Set("Authorization", "Bearer test-secret")
 	rec := httptest.NewRecorder()
 	srv.ServeHTTP(rec, req)
 
@@ -195,6 +199,7 @@ func TestDeleteFile(t *testing.T) {
 	fileID := result["id"].(string)
 
 	req := httptest.NewRequest(http.MethodDelete, "/api/files/"+fileID, nil)
+	req.Header.Set("Authorization", "Bearer test-secret")
 	rec := httptest.NewRecorder()
 	srv.ServeHTTP(rec, req)
 
@@ -204,6 +209,7 @@ func TestDeleteFile(t *testing.T) {
 
 	// Verify file is gone
 	req = httptest.NewRequest(http.MethodGet, "/api/files", nil)
+	req.Header.Set("Authorization", "Bearer test-secret")
 	rec = httptest.NewRecorder()
 	srv.ServeHTTP(rec, req)
 
@@ -247,6 +253,7 @@ func TestListLinks(t *testing.T) {
 	createTestLink(t, srv, fileID, "linkpass2", "onetime")
 
 	req := httptest.NewRequest(http.MethodGet, "/api/files/"+fileID+"/links", nil)
+	req.Header.Set("Authorization", "Bearer test-secret")
 	rec := httptest.NewRecorder()
 	srv.ServeHTTP(rec, req)
 
@@ -418,6 +425,7 @@ func TestRecoverySetup(t *testing.T) {
 	body, _ := json.Marshal(map[string]string{"password": "mypassword"})
 	req := httptest.NewRequest(http.MethodPost, "/api/recovery/setup", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer test-secret")
 	rec := httptest.NewRecorder()
 	srv.ServeHTTP(rec, req)
 
@@ -452,6 +460,7 @@ func TestRecoveryRecover(t *testing.T) {
 	setupBody, _ := json.Marshal(map[string]string{"password": password})
 	req := httptest.NewRequest(http.MethodPost, "/api/recovery/setup", bytes.NewReader(setupBody))
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer test-secret")
 	rec := httptest.NewRecorder()
 	srv.ServeHTTP(rec, req)
 
@@ -470,6 +479,7 @@ func TestRecoveryRecover(t *testing.T) {
 	recoverBody, _ := json.Marshal(map[string]string{"hex_key": hexKey})
 	req = httptest.NewRequest(http.MethodPost, "/api/recovery/recover", bytes.NewReader(recoverBody))
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer test-secret")
 	rec = httptest.NewRecorder()
 	srv.ServeHTTP(rec, req)
 
@@ -484,5 +494,59 @@ func TestRecoveryRecover(t *testing.T) {
 
 	if recoverResult["password"] != password {
 		t.Errorf("recovered password = %q, want %q", recoverResult["password"], password)
+	}
+}
+
+func TestAuth_RejectsUnauthenticated(t *testing.T) {
+	srv := setupTestServer(t)
+	req := httptest.NewRequest(http.MethodGet, "/api/files", nil)
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("unauthenticated: status = %d, want %d", rec.Code, http.StatusUnauthorized)
+	}
+}
+
+func TestAuth_AcceptsValidToken(t *testing.T) {
+	srv := setupTestServer(t)
+	req := httptest.NewRequest(http.MethodGet, "/api/files", nil)
+	req.Header.Set("Authorization", "Bearer test-secret")
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("authenticated: status = %d, want %d; body = %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+}
+
+func TestAuth_RejectsWrongToken(t *testing.T) {
+	srv := setupTestServer(t)
+	req := httptest.NewRequest(http.MethodGet, "/api/files", nil)
+	req.Header.Set("Authorization", "Bearer wrong-secret")
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("wrong token: status = %d, want %d", rec.Code, http.StatusUnauthorized)
+	}
+}
+
+func TestAuth_HealthBypassesAuth(t *testing.T) {
+	srv := setupTestServer(t)
+	req := httptest.NewRequest(http.MethodGet, "/api/health", nil)
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("health: status = %d, want %d", rec.Code, http.StatusOK)
+	}
+}
+
+func TestAuth_PublicRoutesNoAuth(t *testing.T) {
+	srv := setupTestServer(t)
+	body, _ := json.Marshal(map[string]string{"link_password": "x"})
+	req := httptest.NewRequest(http.MethodPost, "/s/deadbeef/verify", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	if rec.Code == http.StatusUnauthorized {
+		t.Fatal("public route should not require auth")
 	}
 }

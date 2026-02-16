@@ -26,7 +26,7 @@ func main() {
 
 	secret := os.Getenv("NOCTURNE_SECRET")
 	if secret == "" {
-		secret = "dev-secret-change-me"
+		log.Fatal("NOCTURNE_SECRET environment variable is required")
 	}
 
 	db, err := storage.NewDB(dataDir + "/nocturne.db")

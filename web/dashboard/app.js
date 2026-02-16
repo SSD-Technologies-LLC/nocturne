@@ -10,27 +10,82 @@
   let linkModalFileId = null;
   let expandedLinks = {};    // fileId -> boolean
 
+  // ── Auth ──────────────────────────────────────────────────
+  function getToken() {
+    return sessionStorage.getItem('nocturne_token') || '';
+  }
+
+  function setToken(token) {
+    sessionStorage.setItem('nocturne_token', token);
+  }
+
+  function clearToken() {
+    sessionStorage.removeItem('nocturne_token');
+  }
+
+  function showLogin() {
+    document.getElementById('loginOverlay').classList.add('active');
+    document.getElementById('mainContent').classList.add('hidden');
+  }
+
+  function hideLogin() {
+    document.getElementById('loginOverlay').classList.remove('active');
+    document.getElementById('mainContent').classList.remove('hidden');
+  }
+
+  function handleLogin() {
+    var token = document.getElementById('loginToken').value.trim();
+    if (!token) {
+      showToast('API key is required');
+      return;
+    }
+    setToken(token);
+    hideLogin();
+    fetchFiles();
+    checkRecoveryBanner();
+  }
+  window.handleLogin = handleLogin;
+
+  function logout() {
+    clearToken();
+    showLogin();
+  }
+  window.logout = logout;
+
   // ── Init ───────────────────────────────────────────────────
   document.addEventListener('DOMContentLoaded', function () {
     initDragDrop();
     initCipherSelector();
     initModeSelector();
-    fetchFiles();
-    checkRecoveryBanner();
+    if (!getToken()) {
+      showLogin();
+    } else {
+      fetchFiles();
+      checkRecoveryBanner();
+    }
   });
 
   // ── API helpers ────────────────────────────────────────────
   async function api(method, path, body, isFormData) {
-    const opts = { method: method };
+    var opts = { method: method, headers: {} };
+    var token = getToken();
+    if (token && path.indexOf('/api/') === 0) {
+      opts.headers['Authorization'] = 'Bearer ' + token;
+    }
     if (body) {
       if (isFormData) {
         opts.body = body;
       } else {
-        opts.headers = { 'Content-Type': 'application/json' };
+        opts.headers['Content-Type'] = 'application/json';
         opts.body = JSON.stringify(body);
       }
     }
-    const res = await fetch(path, opts);
+    var res = await fetch(path, opts);
+    if (res.status === 401) {
+      clearToken();
+      showLogin();
+      throw new Error('Authentication required');
+    }
     return res;
   }
 

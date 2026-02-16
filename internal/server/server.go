@@ -1,6 +1,7 @@
 package server
 
 import (
+	"crypto/subtle"
 	"encoding/json"
 	"io/fs"
 	"net/http"
@@ -35,26 +36,44 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	s.mux.ServeHTTP(w, r)
 }
 
+// requireAuth returns middleware that checks for a valid Bearer token.
+func (s *Server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		auth := r.Header.Get("Authorization")
+		const prefix = "Bearer "
+		if len(auth) < len(prefix) || auth[:len(prefix)] != prefix {
+			writeError(w, http.StatusUnauthorized, "authorization required")
+			return
+		}
+		token := auth[len(prefix):]
+		if subtle.ConstantTimeCompare([]byte(token), []byte(s.secret)) != 1 {
+			writeError(w, http.StatusUnauthorized, "invalid token")
+			return
+		}
+		next(w, r)
+	}
+}
+
 // routes registers all HTTP routes on the server mux.
 func (s *Server) routes() {
-	// Health
+	// Health (no auth)
 	s.mux.HandleFunc("GET /api/health", s.handleHealth)
 
-	// Files
-	s.mux.HandleFunc("POST /api/files", s.handleUploadFile)
-	s.mux.HandleFunc("GET /api/files", s.handleListFiles)
-	s.mux.HandleFunc("DELETE /api/files/{id}", s.handleDeleteFile)
+	// Files (auth required)
+	s.mux.HandleFunc("POST /api/files", s.requireAuth(s.handleUploadFile))
+	s.mux.HandleFunc("GET /api/files", s.requireAuth(s.handleListFiles))
+	s.mux.HandleFunc("DELETE /api/files/{id}", s.requireAuth(s.handleDeleteFile))
 
-	// Links
-	s.mux.HandleFunc("POST /api/files/{id}/link", s.handleCreateLink)
-	s.mux.HandleFunc("GET /api/files/{id}/links", s.handleListLinks)
-	s.mux.HandleFunc("DELETE /api/links/{id}", s.handleDeleteLink)
+	// Links (auth required)
+	s.mux.HandleFunc("POST /api/files/{id}/link", s.requireAuth(s.handleCreateLink))
+	s.mux.HandleFunc("GET /api/files/{id}/links", s.requireAuth(s.handleListLinks))
+	s.mux.HandleFunc("DELETE /api/links/{id}", s.requireAuth(s.handleDeleteLink))
 
-	// Recovery
-	s.mux.HandleFunc("POST /api/recovery/setup", s.handleRecoverySetup)
-	s.mux.HandleFunc("POST /api/recovery/recover", s.handleRecoveryRecover)
+	// Recovery (auth required)
+	s.mux.HandleFunc("POST /api/recovery/setup", s.requireAuth(s.handleRecoverySetup))
+	s.mux.HandleFunc("POST /api/recovery/recover", s.requireAuth(s.handleRecoveryRecover))
 
-	// Public API
+	// Public API (no auth — these have their own password checks)
 	s.mux.HandleFunc("POST /s/{slug}/verify", s.handlePublicVerify)
 	s.mux.HandleFunc("POST /s/{slug}/download", s.handlePublicDownload)
 

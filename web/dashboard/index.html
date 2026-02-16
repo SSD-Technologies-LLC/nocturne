@@ -8,6 +8,7 @@
 </head>
 <body>
 
+<div id="mainContent">
 <div class="container">
 
   <!-- Header -->
@@ -162,6 +163,27 @@
     <div class="modal-footer">
       <button class="btn btn-ghost" onclick="closeRecoveryModal()">Cancel</button>
       <button class="btn btn-primary" id="recoverBtn" onclick="handleRecover()">Recover</button>
+    </div>
+  </div>
+</div>
+
+</div><!-- /mainContent -->
+
+<!-- Login Overlay -->
+<div id="loginOverlay" class="modal-overlay">
+  <div class="modal" style="max-width: 360px;">
+    <div class="modal-header">
+      <div class="modal-title">Nocturne</div>
+    </div>
+    <div class="modal-body">
+      <div class="form-group">
+        <label class="form-label">API Key</label>
+        <input type="password" id="loginToken" placeholder="Enter your API key" autocomplete="off"
+          onkeydown="if(event.key==='Enter')handleLogin()">
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-primary" onclick="handleLogin()">Unlock</button>
     </div>
   </div>
 </div>
