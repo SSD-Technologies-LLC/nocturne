@@ -312,6 +312,58 @@ func TestLocalStoreOverwrite(t *testing.T) {
 	}
 }
 
+func TestLocalStorePutVersioned(t *testing.T) {
+	s, err := NewLocalStore(":memory:")
+	if err != nil {
+		t.Fatalf("NewLocalStore: %v", err)
+	}
+	defer s.Close()
+
+	key := ContentKey("test", "versioned")
+
+	// PutVersioned should return version 1 on first write.
+	v1Data := []byte(`{"step":"initial"}`)
+	ver, err := s.PutVersioned(key, v1Data, 1*time.Hour)
+	if err != nil {
+		t.Fatalf("PutVersioned: %v", err)
+	}
+	if ver != 1 {
+		t.Fatalf("expected version 1, got %d", ver)
+	}
+
+	// CompareAndSwap with correct version (1) should succeed -> version 2.
+	v2Data := []byte(`{"step":"cas-success"}`)
+	ver2, err := s.CompareAndSwap(key, v2Data, 1, 1*time.Hour)
+	if err != nil {
+		t.Fatalf("CompareAndSwap (correct version): %v", err)
+	}
+	if ver2 != 2 {
+		t.Fatalf("expected version 2 after CAS, got %d", ver2)
+	}
+
+	// CompareAndSwap with stale version (1, but current is 2) should fail.
+	v3Data := []byte(`{"step":"cas-stale"}`)
+	_, err = s.CompareAndSwap(key, v3Data, 1, 1*time.Hour)
+	if err != ErrVersionConflict {
+		t.Fatalf("expected ErrVersionConflict, got %v", err)
+	}
+
+	// GetVersioned should return v2Data at version 2.
+	gotVal, gotVer, found, err := s.GetVersioned(key)
+	if err != nil {
+		t.Fatalf("GetVersioned: %v", err)
+	}
+	if !found {
+		t.Fatal("expected found=true")
+	}
+	if gotVer != 2 {
+		t.Fatalf("expected version 2, got %d", gotVer)
+	}
+	if string(gotVal) != string(v2Data) {
+		t.Fatalf("expected %q, got %q", v2Data, gotVal)
+	}
+}
+
 // Ensure testNodes helper compiles with the unused import suppression.
 var _ = func() {
 	_ = ed25519.PublicKeySize

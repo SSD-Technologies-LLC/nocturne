@@ -9,6 +9,10 @@ import (
 	_ "modernc.org/sqlite"
 )
 
+// ErrVersionConflict is returned by CompareAndSwap when the expected version
+// does not match the current version in the store (optimistic concurrency).
+var ErrVersionConflict = fmt.Errorf("version conflict")
+
 // LocalStore manages DHT key-value entries stored on this node using SQLite.
 type LocalStore struct {
 	db *sql.DB
@@ -37,6 +41,10 @@ func NewLocalStore(dbPath string) (*LocalStore, error) {
 		db.Close()
 		return nil, fmt.Errorf("create table: %w", err)
 	}
+
+	// Add version column for optimistic concurrency control (CAS).
+	// Ignore error if column already exists.
+	_, _ = db.Exec(`ALTER TABLE dht_entries ADD COLUMN version INTEGER DEFAULT 0`)
 
 	return &LocalStore{db: db}, nil
 }
@@ -120,6 +128,71 @@ func (s *LocalStore) ListKeys() ([]NodeID, error) {
 		keys = append(keys, id)
 	}
 	return keys, rows.Err()
+}
+
+// PutVersioned stores a value and returns the new version (starts at 1,
+// increments on each call). This is used with CompareAndSwap for optimistic
+// concurrency control.
+func (s *LocalStore) PutVersioned(key NodeID, value []byte, ttl time.Duration) (uint64, error) {
+	keyHex := hex.EncodeToString(key[:])
+	expiresAt := time.Now().Add(ttl).UnixMilli()
+	var currentVersion uint64
+	err := s.db.QueryRow(`SELECT version FROM dht_entries WHERE key_hex = ?`, keyHex).Scan(&currentVersion)
+	if err == sql.ErrNoRows {
+		currentVersion = 0
+	} else if err != nil {
+		return 0, err
+	}
+	newVersion := currentVersion + 1
+	_, err = s.db.Exec(
+		`INSERT OR REPLACE INTO dht_entries (key_hex, value, expires_at, version) VALUES (?, ?, ?, ?)`,
+		keyHex, value, expiresAt, newVersion,
+	)
+	return newVersion, err
+}
+
+// GetVersioned retrieves a value with its version. Returns (nil, 0, false, nil)
+// if the key is not found or has expired.
+func (s *LocalStore) GetVersioned(key NodeID) ([]byte, uint64, bool, error) {
+	keyHex := hex.EncodeToString(key[:])
+	var value []byte
+	var expiresAt int64
+	var version uint64
+	err := s.db.QueryRow(
+		`SELECT value, expires_at, version FROM dht_entries WHERE key_hex = ?`, keyHex,
+	).Scan(&value, &expiresAt, &version)
+	if err == sql.ErrNoRows {
+		return nil, 0, false, nil
+	}
+	if err != nil {
+		return nil, 0, false, err
+	}
+	if time.Now().UnixMilli() > expiresAt {
+		s.Delete(key)
+		return nil, 0, false, nil
+	}
+	return value, version, true, nil
+}
+
+// CompareAndSwap atomically updates a value if the current version matches
+// expectedVersion. Returns the new version on success, or ErrVersionConflict
+// if the version has changed since the last read.
+func (s *LocalStore) CompareAndSwap(key NodeID, value []byte, expectedVersion uint64, ttl time.Duration) (uint64, error) {
+	keyHex := hex.EncodeToString(key[:])
+	expiresAt := time.Now().Add(ttl).UnixMilli()
+	newVersion := expectedVersion + 1
+	res, err := s.db.Exec(
+		`UPDATE dht_entries SET value = ?, expires_at = ?, version = ? WHERE key_hex = ? AND version = ?`,
+		value, expiresAt, newVersion, keyHex, expectedVersion,
+	)
+	if err != nil {
+		return 0, err
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return 0, ErrVersionConflict
+	}
+	return newVersion, nil
 }
 
 // Close closes the underlying SQLite database.

@@ -143,6 +143,62 @@ func (n *Node) Store(key NodeID, value []byte) error {
 	return nil
 }
 
+// replicateToNetwork replicates a key-value pair to the k closest peers
+// without modifying the local store. Used by CAS workflows that have already
+// written locally via CompareAndSwap/PutVersioned.
+func (n *Node) replicateToNetwork(key NodeID, value []byte) {
+	closest, err := n.FindNode(key)
+	if err != nil {
+		return
+	}
+
+	payload, err := json.Marshal(StorePayload{
+		Key:   key,
+		Value: json.RawMessage(value),
+	})
+	if err != nil {
+		return
+	}
+
+	var wg sync.WaitGroup
+	for _, peer := range closest {
+		if peer.ID == n.id {
+			continue
+		}
+		wg.Add(1)
+		go func(p PeerInfo) {
+			defer wg.Done()
+			n.storeRPC(p, payload)
+		}(peer)
+	}
+	wg.Wait()
+}
+
+// StoreLocal stores a value in the local store with versioning and returns
+// the new version. Used for initial writes in CAS workflows.
+func (n *Node) StoreLocal(key NodeID, value []byte) (uint64, error) {
+	return n.store.PutVersioned(key, value, defaultStoreTTL)
+}
+
+// FindValueVersioned retrieves a value from the local store with its version.
+// Returns (nil, 0, nil) if not found locally.
+func (n *Node) FindValueVersioned(key NodeID) ([]byte, uint64, error) {
+	value, version, found, err := n.store.GetVersioned(key)
+	if err != nil {
+		return nil, 0, err
+	}
+	if !found {
+		return nil, 0, nil
+	}
+	return value, version, nil
+}
+
+// CompareAndSwapLocal atomically updates a value in the local store if the
+// version matches. Returns the new version or ErrVersionConflict.
+func (n *Node) CompareAndSwapLocal(key NodeID, value []byte, expectedVersion uint64) (uint64, error) {
+	return n.store.CompareAndSwap(key, value, expectedVersion, defaultStoreTTL)
+}
+
 // storeRPC sends a STORE RPC to a specific peer. It connects if needed.
 func (n *Node) storeRPC(peer PeerInfo, payload json.RawMessage) error {
 	// Ensure we're connected to this peer.

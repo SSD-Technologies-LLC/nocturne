@@ -62,6 +62,7 @@ func voteRecordKey(entryKey NodeID) NodeID {
 }
 
 // getVoteRecord fetches a VoteRecord from the DHT, or returns nil if not found.
+// Used by tests and read-only paths that don't need versioning.
 func (n *Node) getVoteRecord(entryKey NodeID) (*VoteRecord, error) {
 	key := voteRecordKey(entryKey)
 	data, err := n.FindValue(key)
@@ -78,6 +79,38 @@ func (n *Node) getVoteRecord(entryKey NodeID) (*VoteRecord, error) {
 	return &record, nil
 }
 
+// getVoteRecordVersioned fetches a VoteRecord with its CAS version.
+// Returns (nil, 0, nil) if not found. Falls back to network if not in local store.
+func (n *Node) getVoteRecordVersioned(entryKey NodeID) (*VoteRecord, uint64, error) {
+	key := voteRecordKey(entryKey)
+	data, version, err := n.FindValueVersioned(key)
+	if err != nil {
+		return nil, 0, fmt.Errorf("find vote record: %w", err)
+	}
+
+	// If not found locally, try network then store locally.
+	if data == nil {
+		netData, netErr := n.FindValue(key)
+		if netErr != nil {
+			return nil, 0, fmt.Errorf("find vote record (network): %w", netErr)
+		}
+		if netData == nil {
+			return nil, 0, nil
+		}
+		version, err = n.StoreLocal(key, netData)
+		if err != nil {
+			return nil, 0, fmt.Errorf("store local vote record: %w", err)
+		}
+		data = netData
+	}
+
+	var record VoteRecord
+	if err := json.Unmarshal(data, &record); err != nil {
+		return nil, 0, fmt.Errorf("unmarshal vote record: %w", err)
+	}
+	return &record, version, nil
+}
+
 // storeVoteRecord stores a VoteRecord in the DHT.
 func (n *Node) storeVoteRecord(record *VoteRecord) error {
 	data, err := json.Marshal(record)
@@ -91,142 +124,210 @@ func (n *Node) storeVoteRecord(record *VoteRecord) error {
 // SubmitVoteCommitment submits a vote commitment for the given entry. If no
 // VoteRecord exists yet, a new one is created with default commit/reveal windows.
 // Rejects if the commit window has passed or if the operator already committed.
+// Uses CAS to prevent concurrent modifications from losing commitments.
 func (n *Node) SubmitVoteCommitment(entryKey NodeID, operatorID, commitment string) error {
-	record, err := n.getVoteRecord(entryKey)
-	if err != nil {
-		return err
-	}
+	key := voteRecordKey(entryKey)
 
-	now := time.Now().Unix()
-
-	if record == nil {
-		// Create a new vote record with default windows.
-		record = &VoteRecord{
-			EntryKey:  entryKey,
-			CommitEnd: now + int64(defaultCommitWindow.Seconds()),
-			RevealEnd: now + int64((defaultCommitWindow + defaultRevealWindow).Seconds()),
+	for attempt := 0; attempt < maxCASRetries; attempt++ {
+		record, version, err := n.getVoteRecordVersioned(entryKey)
+		if err != nil {
+			return err
 		}
-	}
 
-	// Reject if commit window has passed.
-	if now > record.CommitEnd {
-		return fmt.Errorf("commit window has ended")
-	}
+		now := time.Now().Unix()
 
-	// Reject duplicate commitment from same operator.
-	for _, c := range record.Commitments {
-		if c.OperatorID == operatorID {
-			return fmt.Errorf("operator %s already committed", operatorID)
+		if record == nil {
+			// Create a new vote record with default windows.
+			record = &VoteRecord{
+				EntryKey:  entryKey,
+				CommitEnd: now + int64(defaultCommitWindow.Seconds()),
+				RevealEnd: now + int64((defaultCommitWindow + defaultRevealWindow).Seconds()),
+			}
 		}
+
+		// Reject if commit window has passed.
+		if now > record.CommitEnd {
+			return fmt.Errorf("commit window has ended")
+		}
+
+		// Reject duplicate commitment from same operator.
+		for _, c := range record.Commitments {
+			if c.OperatorID == operatorID {
+				return fmt.Errorf("operator %s already committed", operatorID)
+			}
+		}
+
+		// Append commitment.
+		record.Commitments = append(record.Commitments, VoteCommitment{
+			OperatorID:  operatorID,
+			Commitment:  commitment,
+			CommittedAt: now,
+		})
+
+		data, err := json.Marshal(record)
+		if err != nil {
+			return fmt.Errorf("marshal vote record: %w", err)
+		}
+
+		// For new records (version 0), use StoreLocal; otherwise CAS.
+		if version == 0 {
+			_, storeErr := n.StoreLocal(key, data)
+			if storeErr != nil {
+				return fmt.Errorf("store vote record: %w", storeErr)
+			}
+			n.replicateToNetwork(key, data)
+			return nil
+		}
+
+		_, casErr := n.CompareAndSwapLocal(key, data, version)
+		if casErr == ErrVersionConflict {
+			continue
+		}
+		if casErr != nil {
+			return fmt.Errorf("cas vote commitment: %w", casErr)
+		}
+
+		n.replicateToNetwork(key, data)
+		return nil
 	}
 
-	// Append commitment.
-	record.Commitments = append(record.Commitments, VoteCommitment{
-		OperatorID:  operatorID,
-		Commitment:  commitment,
-		CommittedAt: now,
-	})
-
-	return n.storeVoteRecord(record)
+	return fmt.Errorf("submit vote commitment: failed after %d retries (version conflict)", maxCASRetries)
 }
 
 // SubmitVoteReveal reveals a vote for the given entry. Verifies that the
 // reveal matches a previously submitted commitment using SHA-256.
+// Uses CAS to prevent concurrent modifications from losing reveals.
 func (n *Node) SubmitVoteReveal(entryKey NodeID, operatorID string, vote int, nonce, reason string) error {
-	record, err := n.getVoteRecord(entryKey)
-	if err != nil {
-		return err
-	}
-	if record == nil {
-		return fmt.Errorf("no vote record found for entry")
-	}
+	key := voteRecordKey(entryKey)
 
-	now := time.Now().Unix()
+	for attempt := 0; attempt < maxCASRetries; attempt++ {
+		record, version, err := n.getVoteRecordVersioned(entryKey)
+		if err != nil {
+			return err
+		}
+		if record == nil {
+			return fmt.Errorf("no vote record found for entry")
+		}
 
-	// Reject if reveal window hasn't started (still in commit phase).
-	if now < record.CommitEnd {
-		return fmt.Errorf("reveal window has not started yet")
-	}
+		now := time.Now().Unix()
 
-	// Reject if reveal window has ended.
-	if now > record.RevealEnd {
-		return fmt.Errorf("reveal window has ended")
-	}
+		// Reject if reveal window hasn't started (still in commit phase).
+		if now < record.CommitEnd {
+			return fmt.Errorf("reveal window has not started yet")
+		}
 
-	// Find matching commitment.
-	expectedCommitment := MakeCommitment(vote, nonce)
-	found := false
-	for _, c := range record.Commitments {
-		if c.OperatorID == operatorID {
-			if c.Commitment != expectedCommitment {
-				return fmt.Errorf("commitment mismatch for operator %s", operatorID)
+		// Reject if reveal window has ended.
+		if now > record.RevealEnd {
+			return fmt.Errorf("reveal window has ended")
+		}
+
+		// Find matching commitment.
+		expectedCommitment := MakeCommitment(vote, nonce)
+		found := false
+		for _, c := range record.Commitments {
+			if c.OperatorID == operatorID {
+				if c.Commitment != expectedCommitment {
+					return fmt.Errorf("commitment mismatch for operator %s", operatorID)
+				}
+				found = true
+				break
 			}
-			found = true
-			break
 		}
-	}
-	if !found {
-		return fmt.Errorf("no commitment found for operator %s", operatorID)
-	}
-
-	// Reject duplicate reveals from same operator.
-	for _, r := range record.Reveals {
-		if r.OperatorID == operatorID {
-			return fmt.Errorf("operator %s already revealed", operatorID)
+		if !found {
+			return fmt.Errorf("no commitment found for operator %s", operatorID)
 		}
+
+		// Reject duplicate reveals from same operator.
+		for _, r := range record.Reveals {
+			if r.OperatorID == operatorID {
+				return fmt.Errorf("operator %s already revealed", operatorID)
+			}
+		}
+
+		// Append reveal.
+		record.Reveals = append(record.Reveals, VoteReveal{
+			OperatorID: operatorID,
+			Vote:       vote,
+			Nonce:      nonce,
+			Reason:     reason,
+			RevealedAt: now,
+		})
+
+		data, err := json.Marshal(record)
+		if err != nil {
+			return fmt.Errorf("marshal vote record: %w", err)
+		}
+
+		_, casErr := n.CompareAndSwapLocal(key, data, version)
+		if casErr == ErrVersionConflict {
+			continue
+		}
+		if casErr != nil {
+			return fmt.Errorf("cas vote reveal: %w", casErr)
+		}
+
+		n.replicateToNetwork(key, data)
+		return nil
 	}
 
-	// Append reveal.
-	record.Reveals = append(record.Reveals, VoteReveal{
-		OperatorID: operatorID,
-		Vote:       vote,
-		Nonce:      nonce,
-		Reason:     reason,
-		RevealedAt: now,
-	})
-
-	return n.storeVoteRecord(record)
+	return fmt.Errorf("submit vote reveal: failed after %d retries (version conflict)", maxCASRetries)
 }
 
 // TallyVotes tallies the revealed votes for the given entry. Only revealed
 // votes count. Valid is true when total >= 3 and the majority exceeds the
-// BFT threshold (67%).
+// BFT threshold (67%). Uses CAS to finalize the record.
 func (n *Node) TallyVotes(entryKey NodeID) (*VoteTally, error) {
-	record, err := n.getVoteRecord(entryKey)
-	if err != nil {
-		return nil, err
-	}
-	if record == nil {
-		return nil, fmt.Errorf("no vote record found for entry")
-	}
+	key := voteRecordKey(entryKey)
 
-	tally := &VoteTally{EntryKey: entryKey}
-
-	for _, r := range record.Reveals {
-		if r.Vote > 0 {
-			tally.UpVotes++
-		} else {
-			tally.DownVotes++
+	for attempt := 0; attempt < maxCASRetries; attempt++ {
+		record, version, err := n.getVoteRecordVersioned(entryKey)
+		if err != nil {
+			return nil, err
 		}
-	}
-	tally.Total = tally.UpVotes + tally.DownVotes
-
-	// Valid if total >= 3 and the majority exceeds BFT threshold.
-	if tally.Total >= 3 {
-		majority := tally.UpVotes
-		if tally.DownVotes > majority {
-			majority = tally.DownVotes
+		if record == nil {
+			return nil, fmt.Errorf("no vote record found for entry")
 		}
-		if float64(majority)/float64(tally.Total) >= bftThreshold {
-			tally.Valid = true
+
+		tally := &VoteTally{EntryKey: entryKey}
+
+		for _, r := range record.Reveals {
+			if r.Vote > 0 {
+				tally.UpVotes++
+			} else {
+				tally.DownVotes++
+			}
 		}
+		tally.Total = tally.UpVotes + tally.DownVotes
+
+		// Valid if total >= 3 and the majority exceeds BFT threshold.
+		if tally.Total >= 3 {
+			majority := tally.UpVotes
+			if tally.DownVotes > majority {
+				majority = tally.DownVotes
+			}
+			if float64(majority)/float64(tally.Total) >= bftThreshold {
+				tally.Valid = true
+			}
+		}
+
+		// Mark record as finalized.
+		record.Finalized = true
+		data, err := json.Marshal(record)
+		if err != nil {
+			return nil, fmt.Errorf("marshal vote record: %w", err)
+		}
+
+		_, casErr := n.CompareAndSwapLocal(key, data, version)
+		if casErr == ErrVersionConflict {
+			continue
+		}
+		if casErr != nil {
+			return nil, fmt.Errorf("cas tally votes: %w", casErr)
+		}
+
+		n.replicateToNetwork(key, data)
+		return tally, nil
 	}
 
-	// Mark record as finalized.
-	record.Finalized = true
-	if err := n.storeVoteRecord(record); err != nil {
-		return nil, fmt.Errorf("finalize vote record: %w", err)
-	}
-
-	return tally, nil
+	return nil, fmt.Errorf("tally votes: failed after %d retries (version conflict)", maxCASRetries)
 }
