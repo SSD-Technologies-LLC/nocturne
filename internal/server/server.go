@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/ssd-technologies/nocturne/internal/dht"
 	"github.com/ssd-technologies/nocturne/internal/storage"
 	"github.com/ssd-technologies/nocturne/web"
 )
@@ -18,6 +19,7 @@ type Server struct {
 	mux           *http.ServeMux
 	limiter       *rateLimiter
 	strictLimiter *rateLimiter
+	dhtNode       *dht.Node
 }
 
 // New creates a new Server with all routes registered.
@@ -37,6 +39,17 @@ func New(db *storage.DB, secret string) *Server {
 func (s *Server) Close() {
 	s.limiter.close()
 	s.strictLimiter.close()
+}
+
+// SetDHTNode attaches an optional DHT node to the server for P2P storage.
+// If nil, the server falls back to its existing SQLite blob storage.
+func (s *Server) SetDHTNode(node *dht.Node) {
+	s.dhtNode = node
+}
+
+// DHTNode returns the server's DHT node, or nil if not configured.
+func (s *Server) DHTNode() *dht.Node {
+	return s.dhtNode
 }
 
 // ServeHTTP implements http.Handler.
