@@ -484,3 +484,123 @@ func TestLocalAPIFileDownload(t *testing.T) {
 		t.Fatalf("response body mismatch: got %d bytes, want %d bytes", len(got), len(ciphertext))
 	}
 }
+
+func TestLocalAPIMessageSend(t *testing.T) {
+	nodes := testNodes(t, 2)
+	a, b := nodes[0], nodes[1]
+
+	// Bootstrap a and b to know each other.
+	if _, err := a.Ping(b.Addr()); err != nil {
+		t.Fatalf("a ping b: %v", err)
+	}
+	time.Sleep(100 * time.Millisecond)
+
+	// Register handler on b.
+	var received json.RawMessage
+	done := make(chan struct{})
+	b.OnDirectMessage(func(from NodeID, content json.RawMessage) {
+		received = content
+		close(done)
+	})
+
+	api := NewLocalAPI(a)
+	srv := httptest.NewServer(api.Handler())
+	defer srv.Close()
+
+	// Send message via API.
+	toHex := b.ID().Hex()
+	body := fmt.Sprintf(`{"to":"%s","content":{"text":"hello via API"}}`, toHex)
+	resp, err := http.Post(srv.URL+"/local/messages/send", "application/json", bytes.NewBufferString(body))
+	if err != nil {
+		t.Fatalf("POST /local/messages/send: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected 200, got %d: %s", resp.StatusCode, respBody)
+	}
+
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout waiting for message delivery")
+	}
+
+	if string(received) != `{"text":"hello via API"}` {
+		t.Fatalf("unexpected content: %s", received)
+	}
+}
+
+func TestLocalAPIMessageSendValidation(t *testing.T) {
+	nodes := testNodes(t, 1)
+	api := NewLocalAPI(nodes[0])
+	srv := httptest.NewServer(api.Handler())
+	defer srv.Close()
+
+	// Missing 'to' field.
+	resp, err := http.Post(srv.URL+"/local/messages/send", "application/json", bytes.NewBufferString(`{"content":{"text":"hi"}}`))
+	if err != nil {
+		t.Fatalf("POST: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400 for missing 'to', got %d", resp.StatusCode)
+	}
+
+	// Missing 'content' field.
+	resp, err = http.Post(srv.URL+"/local/messages/send", "application/json", bytes.NewBufferString(`{"to":"0000000000000000000000000000000000000000000000000000000000000000"}`))
+	if err != nil {
+		t.Fatalf("POST: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400 for missing 'content', got %d", resp.StatusCode)
+	}
+}
+
+func TestLocalAPIMessageInbox(t *testing.T) {
+	nodes := testNodes(t, 1)
+	api := NewLocalAPI(nodes[0])
+	srv := httptest.NewServer(api.Handler())
+	defer srv.Close()
+
+	// GET inbox — should return empty array.
+	resp, err := http.Get(srv.URL + "/local/messages/inbox")
+	if err != nil {
+		t.Fatalf("GET /local/messages/inbox: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+
+	var messages []DirectPayload
+	if err := json.NewDecoder(resp.Body).Decode(&messages); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+
+	if len(messages) != 0 {
+		t.Fatalf("expected empty inbox, got %d messages", len(messages))
+	}
+}
+
+func TestLocalAPIMessageInboxDelete(t *testing.T) {
+	nodes := testNodes(t, 1)
+	api := NewLocalAPI(nodes[0])
+	srv := httptest.NewServer(api.Handler())
+	defer srv.Close()
+
+	// DELETE inbox message.
+	req, _ := http.NewRequest(http.MethodDelete, srv.URL+"/local/messages/inbox/test-nonce-1", nil)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("DELETE: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+}

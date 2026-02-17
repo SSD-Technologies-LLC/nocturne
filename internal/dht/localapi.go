@@ -39,6 +39,9 @@ func (api *LocalAPI) Handler() http.Handler {
 	mux.HandleFunc("/local/awareness", api.handleAwareness)
 	mux.HandleFunc("/local/files/", api.handleFilesByID)
 	mux.HandleFunc("/local/files", api.handleFiles)
+	mux.HandleFunc("/local/messages/send", api.handleMessageSend)
+	mux.HandleFunc("/local/messages/inbox/", api.handleMessageInboxByNonce)
+	mux.HandleFunc("/local/messages/inbox", api.handleMessageInbox)
 
 	return mux
 }
@@ -655,4 +658,93 @@ func (api *LocalAPI) deleteFile(w http.ResponseWriter, r *http.Request, fileID s
 	}
 
 	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted", "file_id": fileID})
+}
+
+// handleMessageSend handles POST /local/messages/send.
+// Body: {"to": "hex-node-id", "content": {...}}
+func (api *LocalAPI) handleMessageSend(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+
+	body, ok := readBody(w, r)
+	if !ok {
+		return
+	}
+
+	var req struct {
+		To      string          `json:"to"`
+		Content json.RawMessage `json:"content"`
+	}
+	if err := json.Unmarshal(body, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+		return
+	}
+
+	if req.To == "" {
+		writeError(w, http.StatusBadRequest, "to field required")
+		return
+	}
+	if req.Content == nil {
+		writeError(w, http.StatusBadRequest, "content field required")
+		return
+	}
+
+	toBytes, err := hex.DecodeString(req.To)
+	if err != nil || len(toBytes) != IDLength {
+		writeError(w, http.StatusBadRequest, "invalid to: must be 64-char hex node ID")
+		return
+	}
+	var toID NodeID
+	copy(toID[:], toBytes)
+
+	if err := api.node.SendDirectMessage(toID, req.Content); err != nil {
+		writeError(w, http.StatusInternalServerError, "send message failed: "+err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]string{"status": "sent"})
+}
+
+// handleMessageInbox handles GET /local/messages/inbox.
+func (api *LocalAPI) handleMessageInbox(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+
+	messages, err := api.node.CheckInbox()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "check inbox failed: "+err.Error())
+		return
+	}
+
+	if messages == nil {
+		messages = []DirectPayload{}
+	}
+	writeJSON(w, http.StatusOK, messages)
+}
+
+// handleMessageInboxByNonce handles DELETE /local/messages/inbox/{nonce}.
+func (api *LocalAPI) handleMessageInboxByNonce(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodDelete {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+
+	nonce := strings.TrimPrefix(r.URL.Path, "/local/messages/inbox/")
+	if nonce == "" {
+		writeError(w, http.StatusBadRequest, "nonce required in path")
+		return
+	}
+
+	// Clear the inbox entry for this node.
+	inboxKey := PrefixKey("inbox", api.node.ID().Hex())
+	if err := api.node.store.Delete(inboxKey); err != nil {
+		writeError(w, http.StatusInternalServerError, "delete inbox message failed: "+err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted", "nonce": nonce})
 }
