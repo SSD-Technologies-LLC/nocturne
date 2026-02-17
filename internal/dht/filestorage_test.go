@@ -3,6 +3,7 @@ package dht
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"testing"
 	"time"
 )
@@ -34,6 +35,15 @@ func TestStoreShard(t *testing.T) {
 	gotChecksum := sha256.Sum256(got)
 	if hex.EncodeToString(gotChecksum[:]) != checksumHex {
 		t.Fatal("checksum mismatch")
+	}
+
+	// Verify sentinel error for missing shard.
+	_, err = b.RetrieveShard("no-such-file", 99)
+	if err == nil {
+		t.Fatal("expected error for missing shard")
+	}
+	if !errors.Is(err, ErrShardNotFound) {
+		t.Fatalf("expected ErrShardNotFound, got: %v", err)
 	}
 }
 
@@ -78,6 +88,15 @@ func TestStoreAndRetrieveManifest(t *testing.T) {
 	if len(got.Shards) != 6 {
 		t.Fatalf("expected 6 shards, got %d", len(got.Shards))
 	}
+
+	// Verify sentinel error for missing manifest.
+	_, err = b.RetrieveManifest("no-such-file")
+	if err == nil {
+		t.Fatal("expected error for missing manifest")
+	}
+	if !errors.Is(err, ErrManifestNotFound) {
+		t.Fatalf("expected ErrManifestNotFound, got: %v", err)
+	}
 }
 
 func TestUpdateFileIndex(t *testing.T) {
@@ -115,5 +134,22 @@ func TestUpdateFileIndex(t *testing.T) {
 	}
 	if len(index.FileIDs) != 1 {
 		t.Fatalf("expected 1 file, got %d", len(index.FileIDs))
+	}
+	if index.FileIDs[0] != "file-002" {
+		t.Fatalf("expected remaining file to be file-002, got %s", index.FileIDs[0])
+	}
+
+	// Duplicate-add: adding file-002 again should not create a duplicate.
+	if err := a.AddToFileIndex("op-1", "file-002"); err != nil {
+		t.Fatalf("duplicate AddToFileIndex: %v", err)
+	}
+	time.Sleep(200 * time.Millisecond)
+
+	index, err = b.GetFileIndex("op-1")
+	if err != nil {
+		t.Fatalf("GetFileIndex after duplicate add: %v", err)
+	}
+	if len(index.FileIDs) != 1 {
+		t.Fatalf("expected 1 file after duplicate add, got %d", len(index.FileIDs))
 	}
 }

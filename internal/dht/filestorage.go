@@ -2,8 +2,19 @@ package dht
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"sync"
 )
+
+// Sentinel errors for not-found conditions.
+var (
+	ErrShardNotFound    = errors.New("shard not found")
+	ErrManifestNotFound = errors.New("manifest not found")
+)
+
+// fileIndexMu protects the read-modify-write cycle in updateFileIndex.
+var fileIndexMu sync.Mutex
 
 // StoreShard stores a raw shard byte slice at the DHT key for fileID:shardIndex.
 // The data is JSON-encoded (base64) before storage so it survives the DHT's
@@ -25,7 +36,7 @@ func (n *Node) RetrieveShard(fileID string, shardIndex int) ([]byte, error) {
 		return nil, fmt.Errorf("find shard %s:%d: %w", fileID, shardIndex, err)
 	}
 	if data == nil {
-		return nil, fmt.Errorf("shard %s:%d not found", fileID, shardIndex)
+		return nil, fmt.Errorf("shard %s:%d: %w", fileID, shardIndex, ErrShardNotFound)
 	}
 	var decoded []byte
 	if err := json.Unmarshal(data, &decoded); err != nil {
@@ -52,7 +63,7 @@ func (n *Node) RetrieveManifest(fileID string) (*ShardManifest, error) {
 		return nil, fmt.Errorf("find manifest %s: %w", fileID, err)
 	}
 	if data == nil {
-		return nil, fmt.Errorf("manifest %s not found", fileID)
+		return nil, fmt.Errorf("manifest %s: %w", fileID, ErrManifestNotFound)
 	}
 	var m ShardManifest
 	if err := json.Unmarshal(data, &m); err != nil {
@@ -89,12 +100,20 @@ func (n *Node) GetFileIndex(operatorID string) (*FileIndex, error) {
 }
 
 func (n *Node) updateFileIndex(operatorID, fileID string, add bool) error {
+	fileIndexMu.Lock()
+	defer fileIndexMu.Unlock()
+
 	key := FileIndexKey(operatorID)
-	data, _ := n.FindValue(key)
+	data, err := n.FindValue(key)
+	if err != nil {
+		return fmt.Errorf("find file index for %s: %w", operatorID, err)
+	}
 
 	var index FileIndex
 	if data != nil {
-		json.Unmarshal(data, &index)
+		if err := json.Unmarshal(data, &index); err != nil {
+			return fmt.Errorf("unmarshal file index for %s: %w", operatorID, err)
+		}
 	}
 	index.OperatorID = operatorID
 
