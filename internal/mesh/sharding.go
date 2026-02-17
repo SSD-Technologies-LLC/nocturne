@@ -60,3 +60,31 @@ func ReconstructData(shards [][]byte, dataShards, parityShards int, originalSize
 
 	return result[:originalSize], nil
 }
+
+// ReconstructShards reconstructs missing shards in-place using Reed-Solomon.
+// Unlike ReconstructData, this returns the individual shard slices (including
+// parity) rather than joining them into the original data. This is used by the
+// repair loop to re-store individual missing shards.
+// The shards slice is modified in place: nil entries are filled with
+// reconstructed data. The caller should pass a slice of length
+// dataShards+parityShards where missing shards are nil.
+func ReconstructShards(shards [][]byte, dataShards, parityShards int) ([][]byte, error) {
+	enc, err := reedsolomon.New(dataShards, parityShards)
+	if err != nil {
+		return nil, fmt.Errorf("creating reed-solomon encoder: %w", err)
+	}
+
+	if err := enc.Reconstruct(shards); err != nil {
+		return nil, fmt.Errorf("reconstructing shards: %w", err)
+	}
+
+	ok, err := enc.Verify(shards)
+	if err != nil {
+		return nil, fmt.Errorf("verifying shards: %w", err)
+	}
+	if !ok {
+		return nil, fmt.Errorf("shard verification failed after reconstruction")
+	}
+
+	return shards, nil
+}
