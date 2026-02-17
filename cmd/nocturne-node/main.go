@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	"github.com/ssd-technologies/nocturne/internal/dht"
 	"github.com/ssd-technologies/nocturne/internal/mesh"
 )
 
@@ -169,7 +170,7 @@ func cmdConnect() {
 	}
 
 	// 3. Load or generate keypair.
-	pub, _ := loadOrGenerateKeypair(keyFile)
+	pub, priv := loadOrGenerateKeypair(keyFile)
 	nodeID := nodeIDFromPublicKey(pub)
 
 	// 4. Parse arguments.
@@ -251,6 +252,61 @@ func cmdConnect() {
 	if resp.Type != "registered" {
 		fmt.Fprintf(os.Stderr, "Error: unexpected response: %s\n", resp.Type)
 		os.Exit(1)
+	}
+
+	// 8b. Optionally start a DHT peer alongside the WebSocket mesh.
+	var dhtNode *dht.Node
+	if os.Getenv("NOCTURNE_DHT_MODE") == "true" {
+		dhtPort := 0
+		if p := os.Getenv("NOCTURNE_DHT_PORT"); p != "" {
+			dhtPort, _ = strconv.Atoi(p)
+		}
+
+		cfg := dht.Config{
+			PrivateKey: priv,
+			PublicKey:  pub,
+			K:          20,
+			Alpha:      3,
+			Port:       dhtPort,
+			BindAddr:   "0.0.0.0",
+		}
+
+		dhtNode, err = dht.NewNode(cfg)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: creating DHT node: %v\n", err)
+			os.Exit(1)
+		}
+		if err := dhtNode.Start(); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: starting DHT node: %v\n", err)
+			os.Exit(1)
+		}
+
+		// Bootstrap to configured DHT peers.
+		if peers := os.Getenv("NOCTURNE_DHT_BOOTSTRAP"); peers != "" {
+			addrs := strings.Split(peers, ",")
+			for i := range addrs {
+				addrs[i] = strings.TrimSpace(addrs[i])
+			}
+			if err := dhtNode.Bootstrap(addrs); err != nil {
+				fmt.Fprintf(os.Stderr, "Warning: DHT bootstrap error: %v\n", err)
+			}
+		}
+
+		// Start the LocalAPI on localhost.
+		dhtAPIPort := "127.0.0.1:0"
+		if p := os.Getenv("NOCTURNE_DHT_API_PORT"); p != "" {
+			dhtAPIPort = "127.0.0.1:" + p
+		}
+		apiListener, err := net.Listen("tcp", dhtAPIPort)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: starting DHT LocalAPI: %v\n", err)
+			os.Exit(1)
+		}
+		api := dht.NewLocalAPI(dhtNode)
+		go http.Serve(apiListener, api.Handler())
+
+		fmt.Printf("DHT node started on %s\n", dhtNode.Addr())
+		fmt.Printf("DHT LocalAPI listening on %s\n", apiListener.Addr().String())
 	}
 
 	// 9. Write PID file.
@@ -342,6 +398,9 @@ func cmdConnect() {
 
 	// Cleanup.
 	close(shutdownCh)
+	if dhtNode != nil {
+		dhtNode.Close()
+	}
 	listener.Close()
 	os.Remove(pidFile)
 
