@@ -153,9 +153,28 @@
         throw new Error(errData.error || 'Download failed');
       }
 
-      // Success — download the file
-      var blob = await res.blob();
-      var filename = extractFilename(res) || 'download';
+      // Check if this is a P2P response (JSON with ciphertext for client-side decryption)
+      var contentType = res.headers.get('Content-Type');
+      var blob, filename;
+
+      if (contentType && contentType.indexOf('application/json') !== -1) {
+        var data = await res.json();
+        if (data.storage_mode === 'p2p' && window.nocturneDecrypt) {
+          // P2P mode: client-side decryption
+          var ciphertext = window.nocturneFromBase64(data.ciphertext);
+          var salt = window.nocturneFromBase64(data.salt);
+          var nonce = window.nocturneFromBase64(data.nonce);
+          var plaintext = await window.nocturneDecrypt(ciphertext, filePassword, salt, nonce);
+          blob = new Blob([plaintext]);
+          filename = data.file_name || 'download';
+        } else {
+          throw new Error(data.error || 'Download failed');
+        }
+      } else {
+        // Non-P2P: server already decrypted, response is binary
+        blob = await res.blob();
+        filename = extractFilename(res) || 'download';
+      }
 
       // Brief green flash
       document.getElementById('mainCard').classList.add('success-flash');

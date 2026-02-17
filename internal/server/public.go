@@ -1,6 +1,7 @@
 package server
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -88,11 +89,18 @@ func (s *Server) handlePublicVerify(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, http.StatusOK, map[string]any{
+	resp := map[string]any{
 		"name":   file.Name,
 		"size":   file.Size,
 		"cipher": file.Cipher,
-	})
+	}
+
+	// Signal P2P mode so the frontend knows to decrypt client-side.
+	if len(file.Blob) == 0 {
+		resp["storage_mode"] = "p2p"
+	}
+
+	writeJSON(w, http.StatusOK, resp)
 }
 
 // handlePublicDownload handles POST /s/{slug}/download — decrypt and stream file download.
@@ -134,22 +142,20 @@ func (s *Server) handlePublicDownload(w http.ResponseWriter, r *http.Request) {
 
 	// Determine ciphertext source: P2P (empty blob + DHT) or local SQLite blob.
 	var ciphertext []byte
-	if len(file.Blob) == 0 && s.dhtNode != nil {
+	isP2P := len(file.Blob) == 0
+	if isP2P && s.dhtNode != nil {
 		reconstructed, err := s.dhtNode.ReconstructFile(file.ID)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "failed to reconstruct file from network")
 			return
 		}
 		ciphertext = reconstructed
+	} else if isP2P {
+		// Empty blob but no DHT — pre-encrypted file stored locally.
+		writeError(w, http.StatusInternalServerError, "P2P file but no DHT node available")
+		return
 	} else {
 		ciphertext = file.Blob
-	}
-
-	// Decrypt the file.
-	plaintext, err := crypto.Decrypt(ciphertext, req.FilePassword, file.Cipher, file.Salt, file.Nonce)
-	if err != nil {
-		writeError(w, http.StatusUnauthorized, "decryption failed: wrong file password")
-		return
 	}
 
 	// For non-onetime links, increment download count.
@@ -158,6 +164,26 @@ func (s *Server) handlePublicDownload(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, "failed to increment downloads")
 			return
 		}
+	}
+
+	// P2P mode: return ciphertext + params as JSON for client-side decryption.
+	// The browser will use argon2-browser + Web Crypto to decrypt locally.
+	if isP2P {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"storage_mode": "p2p",
+			"ciphertext":   base64.StdEncoding.EncodeToString(ciphertext),
+			"salt":         base64.StdEncoding.EncodeToString(file.Salt),
+			"nonce":        base64.StdEncoding.EncodeToString(file.Nonce),
+			"file_name":    file.Name,
+		})
+		return
+	}
+
+	// Non-P2P: decrypt server-side and stream plaintext.
+	plaintext, err := crypto.Decrypt(ciphertext, req.FilePassword, file.Cipher, file.Salt, file.Nonce)
+	if err != nil {
+		writeError(w, http.StatusUnauthorized, "decryption failed: wrong file password")
+		return
 	}
 
 	// Stream the decrypted file.

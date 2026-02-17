@@ -263,15 +263,32 @@
   }
 
   async function uploadFile(file, password, cipher) {
-    var fd = new FormData();
-    fd.append('file', file);
-    fd.append('password', password);
-    fd.append('cipher', cipher);
-
     var btn = document.getElementById('uploadBtn');
     setLoading(btn, true);
 
     try {
+      var fd = new FormData();
+
+      // P2P mode: client-side encryption when crypto.js is loaded
+      if (window.nocturneEncrypt) {
+        var arrayBuffer = await file.arrayBuffer();
+        var encrypted = await window.nocturneEncrypt(new Uint8Array(arrayBuffer), password);
+
+        // Send pre-encrypted ciphertext
+        fd.append('file', new Blob([encrypted.ciphertext]), file.name);
+        fd.append('pre_encrypted', 'true');
+        fd.append('storage_mode', 'p2p');
+        fd.append('cipher', 'aes-256-gcm');
+        fd.append('salt', window.nocturneToBase64(encrypted.salt));
+        fd.append('nonce', window.nocturneToBase64(encrypted.nonce));
+        fd.append('original_size', file.size.toString());
+      } else {
+        // Fallback: server-side encryption
+        fd.append('file', file);
+        fd.append('password', password);
+        fd.append('cipher', cipher);
+      }
+
       var res = await api('POST', '/api/files', fd, true);
       var data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Upload failed');

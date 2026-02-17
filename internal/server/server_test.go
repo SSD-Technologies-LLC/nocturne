@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/ed25519"
 	"crypto/rand"
+	"encoding/base64"
 	"encoding/json"
 	"io"
 	"mime/multipart"
@@ -14,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ssd-technologies/nocturne/internal/crypto"
 	"github.com/ssd-technologies/nocturne/internal/dht"
 	"github.com/ssd-technologies/nocturne/internal/storage"
 )
@@ -677,7 +679,7 @@ func TestSecurityHeaders(t *testing.T) {
 	expected := map[string]string{
 		"X-Frame-Options":           "DENY",
 		"X-Content-Type-Options":    "nosniff",
-		"Content-Security-Policy":   "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'",
+		"Content-Security-Policy":   "default-src 'self'; script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval' https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline'; connect-src 'self'",
 		"Strict-Transport-Security": "max-age=63072000; includeSubDomains",
 		"Referrer-Policy":           "strict-origin-when-cross-origin",
 		"Permissions-Policy":        "camera=(), microphone=(), geolocation=()",
@@ -886,7 +888,8 @@ func TestPublicDownload_P2P(t *testing.T) {
 	linkResult := createTestLink(t, srv, fileID, linkPassword, "persistent")
 	slug := linkResult["slug"].(string)
 
-	// Download via the public endpoint with both link and file passwords.
+	// Download via the public endpoint.
+	// P2P downloads now return JSON with ciphertext for client-side decryption.
 	body, _ := json.Marshal(map[string]string{
 		"link_password": linkPassword,
 		"file_password": filePassword,
@@ -900,18 +903,47 @@ func TestPublicDownload_P2P(t *testing.T) {
 		t.Fatalf("P2P download: status = %d, want %d; body = %s", rec.Code, http.StatusOK, rec.Body.String())
 	}
 
-	downloaded, err := io.ReadAll(rec.Body)
+	var dlResult map[string]any
+	if err := json.NewDecoder(rec.Body).Decode(&dlResult); err != nil {
+		t.Fatalf("decode download response: %v", err)
+	}
+
+	// Verify P2P response fields.
+	if dlResult["storage_mode"] != "p2p" {
+		t.Errorf("storage_mode = %v, want %q", dlResult["storage_mode"], "p2p")
+	}
+	if dlResult["file_name"] != "p2p-download.txt" {
+		t.Errorf("file_name = %v, want %q", dlResult["file_name"], "p2p-download.txt")
+	}
+	if dlResult["ciphertext"] == nil || dlResult["ciphertext"] == "" {
+		t.Error("expected non-empty ciphertext")
+	}
+	if dlResult["salt"] == nil || dlResult["salt"] == "" {
+		t.Error("expected non-empty salt")
+	}
+	if dlResult["nonce"] == nil || dlResult["nonce"] == "" {
+		t.Error("expected non-empty nonce")
+	}
+
+	// Verify that decrypting the ciphertext with the file password yields the original content.
+	ctBytes, err := base64.StdEncoding.DecodeString(dlResult["ciphertext"].(string))
 	if err != nil {
-		t.Fatalf("read body: %v", err)
+		t.Fatalf("decode ciphertext base64: %v", err)
+	}
+	saltBytes, err := base64.StdEncoding.DecodeString(dlResult["salt"].(string))
+	if err != nil {
+		t.Fatalf("decode salt base64: %v", err)
+	}
+	nonceBytes, err := base64.StdEncoding.DecodeString(dlResult["nonce"].(string))
+	if err != nil {
+		t.Fatalf("decode nonce base64: %v", err)
 	}
 
-	if string(downloaded) != originalContent {
-		t.Errorf("content = %q, want %q", string(downloaded), originalContent)
+	plaintext, err := crypto.Decrypt(ctBytes, filePassword, storedFile.Cipher, saltBytes, nonceBytes)
+	if err != nil {
+		t.Fatalf("decrypt ciphertext: %v", err)
 	}
-
-	// Check Content-Disposition header.
-	cd := rec.Header().Get("Content-Disposition")
-	if !strings.Contains(cd, "p2p-download.txt") {
-		t.Errorf("Content-Disposition = %q, want to contain %q", cd, "p2p-download.txt")
+	if string(plaintext) != originalContent {
+		t.Errorf("decrypted content = %q, want %q", string(plaintext), originalContent)
 	}
 }
