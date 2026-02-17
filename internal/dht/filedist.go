@@ -38,6 +38,10 @@ func (n *Node) DistributeFile(p DistributeFileParams) (*ShardManifest, error) {
 		checksumHex := hex.EncodeToString(checksum[:])
 
 		if err := n.StoreShard(p.FileID, i, shard); err != nil {
+			// Best-effort cleanup of shards stored so far.
+			for j := 0; j < i; j++ {
+				n.store.Delete(ShardKey(p.FileID, j))
+			}
 			return nil, fmt.Errorf("store shard %d: %w", i, err)
 		}
 
@@ -115,6 +119,9 @@ func (n *Node) ReconstructFile(fileID string) ([]byte, error) {
 	}
 
 	// 3. Reconstruct using Reed-Solomon.
+	if manifest.FileSize < 0 || manifest.FileSize > int64(^uint(0)>>1) {
+		return nil, fmt.Errorf("invalid file size in manifest: %d", manifest.FileSize)
+	}
 	result, err := mesh.ReconstructData(shards, manifest.DataShards, manifest.ParityShards, int(manifest.FileSize))
 	if err != nil {
 		return nil, fmt.Errorf("reconstruct: %w", err)
@@ -135,26 +142,25 @@ func (n *Node) DeleteDistributedFile(fileID, operatorID string) error {
 		return nil
 	}
 
-	// Delete each shard from local store.
+	// Delete each shard from local store, continuing on errors.
+	var firstErr error
 	for i := 0; i < manifest.TotalShards(); i++ {
-		key := ShardKey(fileID, i)
-		if err := n.store.Delete(key); err != nil {
-			return fmt.Errorf("delete shard %d: %w", i, err)
+		if err := n.store.Delete(ShardKey(fileID, i)); err != nil && firstErr == nil {
+			firstErr = fmt.Errorf("delete shard %d: %w", i, err)
 		}
 	}
 
 	// Delete manifest from local store.
-	key := ManifestKey(fileID)
-	if err := n.store.Delete(key); err != nil {
-		return fmt.Errorf("delete manifest: %w", err)
+	if err := n.store.Delete(ManifestKey(fileID)); err != nil && firstErr == nil {
+		firstErr = fmt.Errorf("delete manifest: %w", err)
 	}
 
 	// Update file index.
 	if operatorID != "" {
-		if err := n.RemoveFromFileIndex(operatorID, fileID); err != nil {
-			return fmt.Errorf("remove from file index: %w", err)
+		if err := n.RemoveFromFileIndex(operatorID, fileID); err != nil && firstErr == nil {
+			firstErr = fmt.Errorf("remove from file index: %w", err)
 		}
 	}
 
-	return nil
+	return firstErr
 }

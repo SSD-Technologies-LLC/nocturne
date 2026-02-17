@@ -22,7 +22,7 @@ func TestDistributeAndReconstructFile(t *testing.T) {
 	manifest, err := nodes[0].DistributeFile(DistributeFileParams{
 		FileID:       "file-dist-001",
 		FileName:     "secret.pdf",
-		FileSize:     1500,
+		FileSize:     int64(len(ciphertext)),
 		Cipher:       "aes-256-gcm",
 		Salt:         []byte("0123456789abcdef0123456789abcdef"),
 		Nonce:        []byte("0123456789ab"),
