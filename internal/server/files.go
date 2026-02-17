@@ -9,6 +9,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/ssd-technologies/nocturne/internal/crypto"
+	"github.com/ssd-technologies/nocturne/internal/dht"
 	"github.com/ssd-technologies/nocturne/internal/storage"
 )
 
@@ -74,6 +75,49 @@ func (s *Server) handleUploadFile(w http.ResponseWriter, r *http.Request) {
 		Blob:       ciphertext,
 		RecoveryID: recoveryID,
 		CreatedAt:  time.Now().Unix(),
+	}
+
+	// P2P distributed storage path: erasure-code and distribute via DHT.
+	storageMode := r.FormValue("storage_mode")
+	if storageMode == "p2p" && s.dhtNode != nil {
+		manifest, err := s.dhtNode.DistributeFile(dht.DistributeFileParams{
+			FileID:       f.ID,
+			FileName:     f.Name,
+			FileSize:     f.Size,
+			Cipher:       f.Cipher,
+			Salt:         f.Salt,
+			Nonce:        f.Nonce,
+			Ciphertext:   ciphertext,
+			DataShards:   4,
+			ParityShards: 2,
+			OperatorID:   "server",
+		})
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "P2P distribution failed")
+			return
+		}
+
+		// Store metadata only (empty blob) in SQLite.
+		// The blob column has a NOT NULL constraint, so we use an empty slice.
+		f.Blob = []byte{}
+
+		if err := s.db.CreateFile(f); err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to store file")
+			return
+		}
+
+		writeJSON(w, http.StatusCreated, map[string]any{
+			"id":           f.ID,
+			"name":         f.Name,
+			"size":         f.Size,
+			"mime_type":    f.MimeType,
+			"cipher":       f.Cipher,
+			"recovery_id":  f.RecoveryID,
+			"created_at":   f.CreatedAt,
+			"storage_mode": "p2p",
+			"shards":       manifest.TotalShards(),
+		})
+		return
 	}
 
 	if err := s.db.CreateFile(f); err != nil {

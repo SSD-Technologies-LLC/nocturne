@@ -2,6 +2,8 @@ package server
 
 import (
 	"bytes"
+	"crypto/ed25519"
+	"crypto/rand"
 	"encoding/json"
 	"io"
 	"mime/multipart"
@@ -10,7 +12,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/ssd-technologies/nocturne/internal/dht"
 	"github.com/ssd-technologies/nocturne/internal/storage"
 )
 
@@ -684,5 +688,134 @@ func TestSecurityHeaders(t *testing.T) {
 		if got != want {
 			t.Errorf("%s = %q, want %q", header, got, want)
 		}
+	}
+}
+
+// createTestDHTCluster creates a minimal 3-node DHT cluster for testing,
+// connects them, and returns the nodes. All nodes are cleaned up at test end.
+func createTestDHTCluster(t *testing.T) []*dht.Node {
+	t.Helper()
+	nodes := make([]*dht.Node, 3)
+	for i := range nodes {
+		pub, priv, err := ed25519.GenerateKey(rand.Reader)
+		if err != nil {
+			t.Fatalf("generate key %d: %v", i, err)
+		}
+		node, err := dht.NewNode(dht.Config{
+			PrivateKey: priv,
+			PublicKey:  pub,
+			K:          20,
+			Alpha:      3,
+			Port:       0,
+			BindAddr:   "127.0.0.1",
+		})
+		if err != nil {
+			t.Fatalf("create DHT node %d: %v", i, err)
+		}
+		if err := node.Start(); err != nil {
+			t.Fatalf("start DHT node %d: %v", i, err)
+		}
+		nodes[i] = node
+		t.Cleanup(func() { node.Close() })
+	}
+	// Connect nodes in a chain: 0->1, 1->2.
+	for i := 1; i < len(nodes); i++ {
+		if _, err := nodes[i-1].Ping(nodes[i].Addr()); err != nil {
+			t.Fatalf("ping %d->%d: %v", i-1, i, err)
+		}
+	}
+	time.Sleep(500 * time.Millisecond)
+	return nodes
+}
+
+// TestUploadFile_P2P tests the P2P upload path that distributes via DHT.
+func TestUploadFile_P2P(t *testing.T) {
+	srv := setupTestServer(t)
+	defer srv.Close()
+
+	// Create and attach a DHT cluster.
+	nodes := createTestDHTCluster(t)
+	srv.SetDHTNode(nodes[0])
+
+	// Build multipart form with storage_mode=p2p.
+	var buf bytes.Buffer
+	writer := multipart.NewWriter(&buf)
+	if err := writer.WriteField("password", "testpassword123"); err != nil {
+		t.Fatalf("write password: %v", err)
+	}
+	if err := writer.WriteField("storage_mode", "p2p"); err != nil {
+		t.Fatalf("write storage_mode: %v", err)
+	}
+	part, err := writer.CreateFormFile("file", "p2p-test.txt")
+	if err != nil {
+		t.Fatalf("create form file: %v", err)
+	}
+	content := bytes.Repeat([]byte("P2P-TEST-DATA-"), 100) // 1400 bytes
+	if _, err := part.Write(content); err != nil {
+		t.Fatalf("write file content: %v", err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatalf("close writer: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/files", &buf)
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	req.Header.Set("Authorization", "Bearer test-secret")
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("upload P2P: status = %d, want %d; body = %s", rec.Code, http.StatusCreated, rec.Body.String())
+	}
+
+	var result map[string]any
+	if err := json.NewDecoder(rec.Body).Decode(&result); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+
+	// Verify response includes P2P fields.
+	if result["storage_mode"] != "p2p" {
+		t.Errorf("storage_mode = %v, want %q", result["storage_mode"], "p2p")
+	}
+	shards, ok := result["shards"].(float64)
+	if !ok || shards != 6 {
+		t.Errorf("shards = %v, want 6", result["shards"])
+	}
+	if result["id"] == nil || result["id"] == "" {
+		t.Error("expected non-empty id")
+	}
+	if result["name"] != "p2p-test.txt" {
+		t.Errorf("name = %v, want %q", result["name"], "p2p-test.txt")
+	}
+
+	fileID := result["id"].(string)
+
+	// Verify file metadata appears in the list.
+	req = httptest.NewRequest(http.MethodGet, "/api/files", nil)
+	req.Header.Set("Authorization", "Bearer test-secret")
+	rec = httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+
+	var files []map[string]any
+	if err := json.NewDecoder(rec.Body).Decode(&files); err != nil {
+		t.Fatalf("decode file list: %v", err)
+	}
+	if len(files) != 1 {
+		t.Fatalf("file count = %d, want 1", len(files))
+	}
+	if files[0]["id"] != fileID {
+		t.Errorf("listed file id = %v, want %q", files[0]["id"], fileID)
+	}
+
+	// Verify blob is empty in SQLite (metadata only, no ciphertext stored).
+	storedFile, err := srv.db.GetFile(fileID)
+	if err != nil {
+		t.Fatalf("GetFile: %v", err)
+	}
+	if len(storedFile.Blob) > 0 {
+		t.Errorf("blob length = %d, want 0 (P2P file should have empty blob)", len(storedFile.Blob))
+	}
+	if storedFile.Name != "p2p-test.txt" {
+		t.Errorf("stored name = %q, want %q", storedFile.Name, "p2p-test.txt")
 	}
 }
