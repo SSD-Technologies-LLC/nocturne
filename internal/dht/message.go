@@ -116,3 +116,25 @@ type QueryPayload struct {
 type ErrorPayload struct {
 	Error string `json:"error"`
 }
+
+// Direct messaging types
+
+const (
+	MsgDirect    = "DIRECT"
+	MsgDirectAck = "DIRECT_ACK"
+)
+
+// DirectPayload carries a message from one agent to another.
+type DirectPayload struct {
+	To      NodeID          `json:"to"`
+	From    NodeID          `json:"from"`
+	Content json.RawMessage `json:"content"`
+	TTL     int             `json:"ttl"`   // remaining hops for relay
+	Nonce   string          `json:"nonce"` // dedup ID
+}
+
+// DirectAckPayload acknowledges receipt of a direct message.
+type DirectAckPayload struct {
+	Nonce    string `json:"nonce"`
+	Received bool   `json:"received"`
+}

@@ -102,3 +102,54 @@ func TestStorePayload(t *testing.T) {
 		t.Fatal("key mismatch")
 	}
 }
+
+func TestDirectMessageSerialization(t *testing.T) {
+	dm := DirectPayload{
+		To:      NodeID{1, 2, 3},
+		From:    NodeID{4, 5, 6},
+		Content: json.RawMessage(`{"text":"hello agent"}`),
+		TTL:     10,
+		Nonce:   "msg-nonce-001",
+	}
+	data, err := json.Marshal(dm)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var got DirectPayload
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if got.TTL != 10 {
+		t.Fatalf("expected TTL=10, got %d", got.TTL)
+	}
+	if got.Nonce != "msg-nonce-001" {
+		t.Fatalf("expected nonce msg-nonce-001, got %s", got.Nonce)
+	}
+	if got.To != dm.To {
+		t.Fatal("To mismatch")
+	}
+	if got.From != dm.From {
+		t.Fatal("From mismatch")
+	}
+}
+
+func TestDirectAckSerialization(t *testing.T) {
+	ack := DirectAckPayload{
+		Nonce:    "msg-nonce-001",
+		Received: true,
+	}
+	data, err := json.Marshal(ack)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var got DirectAckPayload
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if !got.Received {
+		t.Fatal("expected received=true")
+	}
+	if got.Nonce != "msg-nonce-001" {
+		t.Fatalf("nonce mismatch: %s", got.Nonce)
+	}
+}
