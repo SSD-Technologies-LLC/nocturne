@@ -207,6 +207,11 @@ func (s *Server) handleDeleteFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Clean up DHT shards if this was a P2P-stored file.
+	if s.dhtNode != nil {
+		s.dhtNode.DeleteDistributedFile(id, "server")
+	}
+
 	if err := s.db.DeleteFileWithLinks(id); err != nil {
 		writeError(w, http.StatusNotFound, "file not found")
 		return
