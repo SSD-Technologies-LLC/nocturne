@@ -35,6 +35,10 @@ type Node struct {
 	// Gossip layer (optional, set via SetGossiper).
 	gossiper *Gossiper
 
+	// Direct messaging
+	msgHandler   func(from NodeID, content json.RawMessage)
+	seenMessages map[string]time.Time // nonce -> seen time, for dedup
+
 	// Pending RPC tracking: map message ID -> response channel.
 	mu      sync.Mutex
 	pending map[string]chan *Message
@@ -61,12 +65,13 @@ func NewNode(cfg Config) (*Node, error) {
 	}
 
 	n := &Node{
-		id:        id,
-		config:    cfg,
-		table:     NewRoutingTable(id, cfg.K),
-		transport: NewTransport(id, cfg.PrivateKey),
-		store:     store,
-		pending:   make(map[string]chan *Message),
+		id:           id,
+		config:       cfg,
+		table:        NewRoutingTable(id, cfg.K),
+		transport:    NewTransport(id, cfg.PrivateKey),
+		store:        store,
+		seenMessages: make(map[string]time.Time),
+		pending:      make(map[string]chan *Message),
 	}
 	n.transport.OnMessage(n.handleMessage)
 	return n, nil
@@ -682,6 +687,12 @@ func (n *Node) handleMessage(msg *Message, from NodeID) {
 			}
 			n.sendResponse(from, msg.ID, MsgResponse, resp)
 		}
+
+	case MsgDirect:
+		n.handleDirectMessage(msg)
+
+	case MsgDirectAck:
+		n.deliverResponse(msg)
 
 	case MsgGossip:
 		if n.gossiper != nil {

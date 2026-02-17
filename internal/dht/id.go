@@ -6,6 +6,7 @@ package dht
 import (
 	"crypto/ed25519"
 	"crypto/sha256"
+	"encoding/hex"
 	"math/bits"
 )
 
@@ -14,6 +15,11 @@ const IDLength = 32
 
 // NodeID is a 256-bit identifier in the DHT key space.
 type NodeID [IDLength]byte
+
+// Hex returns the hex-encoded string representation of the NodeID.
+func (id NodeID) Hex() string {
+	return hex.EncodeToString(id[:])
+}
 
 // NodeIDFromPublicKey computes SHA-256 of an Ed25519 public key to produce a
 // uniformly distributed NodeID. This ensures the DHT key space is populated
