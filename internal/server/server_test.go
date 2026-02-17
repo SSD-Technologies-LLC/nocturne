@@ -819,3 +819,99 @@ func TestUploadFile_P2P(t *testing.T) {
 		t.Errorf("stored name = %q, want %q", storedFile.Name, "p2p-test.txt")
 	}
 }
+
+// TestPublicDownload_P2P tests the full P2P download flow: upload via P2P,
+// create a link, then download and verify content matches original plaintext.
+func TestPublicDownload_P2P(t *testing.T) {
+	srv := setupTestServer(t)
+	defer srv.Close()
+
+	// Create and attach a DHT cluster.
+	nodes := createTestDHTCluster(t)
+	srv.SetDHTNode(nodes[0])
+
+	originalContent := "This is secret P2P content for download test."
+	filePassword := "p2p-file-pass"
+	linkPassword := "p2p-link-pass"
+
+	// Upload a file with storage_mode=p2p.
+	var buf bytes.Buffer
+	writer := multipart.NewWriter(&buf)
+	if err := writer.WriteField("password", filePassword); err != nil {
+		t.Fatalf("write password: %v", err)
+	}
+	if err := writer.WriteField("storage_mode", "p2p"); err != nil {
+		t.Fatalf("write storage_mode: %v", err)
+	}
+	part, err := writer.CreateFormFile("file", "p2p-download.txt")
+	if err != nil {
+		t.Fatalf("create form file: %v", err)
+	}
+	if _, err := part.Write([]byte(originalContent)); err != nil {
+		t.Fatalf("write file content: %v", err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatalf("close writer: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/files", &buf)
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	req.Header.Set("Authorization", "Bearer test-secret")
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("upload P2P: status = %d, want %d; body = %s", rec.Code, http.StatusCreated, rec.Body.String())
+	}
+
+	var uploadResult map[string]any
+	if err := json.NewDecoder(rec.Body).Decode(&uploadResult); err != nil {
+		t.Fatalf("decode upload response: %v", err)
+	}
+	fileID := uploadResult["id"].(string)
+	if uploadResult["storage_mode"] != "p2p" {
+		t.Fatalf("storage_mode = %v, want %q", uploadResult["storage_mode"], "p2p")
+	}
+
+	// Verify blob is empty in SQLite.
+	storedFile, err := srv.db.GetFile(fileID)
+	if err != nil {
+		t.Fatalf("GetFile: %v", err)
+	}
+	if len(storedFile.Blob) > 0 {
+		t.Fatalf("blob should be empty for P2P file, got %d bytes", len(storedFile.Blob))
+	}
+
+	// Create a link for the file.
+	linkResult := createTestLink(t, srv, fileID, linkPassword, "persistent")
+	slug := linkResult["slug"].(string)
+
+	// Download via the public endpoint with both link and file passwords.
+	body, _ := json.Marshal(map[string]string{
+		"link_password": linkPassword,
+		"file_password": filePassword,
+	})
+	req = httptest.NewRequest(http.MethodPost, "/s/"+slug+"/download", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec = httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("P2P download: status = %d, want %d; body = %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	downloaded, err := io.ReadAll(rec.Body)
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+
+	if string(downloaded) != originalContent {
+		t.Errorf("content = %q, want %q", string(downloaded), originalContent)
+	}
+
+	// Check Content-Disposition header.
+	cd := rec.Header().Get("Content-Disposition")
+	if !strings.Contains(cd, "p2p-download.txt") {
+		t.Errorf("Content-Disposition = %q, want to contain %q", cd, "p2p-download.txt")
+	}
+}

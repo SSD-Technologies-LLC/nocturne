@@ -83,7 +83,7 @@ func (s *Server) handleUploadFile(w http.ResponseWriter, r *http.Request) {
 		manifest, err := s.dhtNode.DistributeFile(dht.DistributeFileParams{
 			FileID:       f.ID,
 			FileName:     f.Name,
-			FileSize:     f.Size,
+			FileSize:     int64(len(ciphertext)),
 			Cipher:       f.Cipher,
 			Salt:         f.Salt,
 			Nonce:        f.Nonce,

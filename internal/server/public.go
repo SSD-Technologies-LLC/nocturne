@@ -132,8 +132,21 @@ func (s *Server) handlePublicDownload(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Determine ciphertext source: P2P (empty blob + DHT) or local SQLite blob.
+	var ciphertext []byte
+	if len(file.Blob) == 0 && s.dhtNode != nil {
+		reconstructed, err := s.dhtNode.ReconstructFile(file.ID)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to reconstruct file from network")
+			return
+		}
+		ciphertext = reconstructed
+	} else {
+		ciphertext = file.Blob
+	}
+
 	// Decrypt the file.
-	plaintext, err := crypto.Decrypt(file.Blob, req.FilePassword, file.Cipher, file.Salt, file.Nonce)
+	plaintext, err := crypto.Decrypt(ciphertext, req.FilePassword, file.Cipher, file.Salt, file.Nonce)
 	if err != nil {
 		writeError(w, http.StatusUnauthorized, "decryption failed: wrong file password")
 		return
