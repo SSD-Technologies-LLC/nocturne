@@ -2,9 +2,11 @@ package dht
 
 import (
 	"bytes"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -339,5 +341,107 @@ func TestLocalAPIAwareness(t *testing.T) {
 	}
 	if fmt.Sprintf("%v", retrieved["load"]) != "0.42" {
 		t.Fatalf("expected load=0.42, got %v", retrieved["load"])
+	}
+}
+
+func TestLocalAPIFileUpload(t *testing.T) {
+	nodes := testNodes(t, 3)
+	for i := 1; i < len(nodes); i++ {
+		nodes[i-1].Ping(nodes[i].Addr())
+	}
+	time.Sleep(300 * time.Millisecond)
+
+	api := NewLocalAPI(nodes[0])
+	srv := httptest.NewServer(api.Handler())
+	defer srv.Close()
+
+	body := map[string]interface{}{
+		"file_id":       "api-file-001",
+		"file_name":     "test.txt",
+		"file_size":     1000,
+		"cipher":        "aes-256-gcm",
+		"salt":          base64.StdEncoding.EncodeToString([]byte("0123456789abcdef0123456789abcdef")),
+		"nonce":         base64.StdEncoding.EncodeToString([]byte("0123456789ab")),
+		"ciphertext":    base64.StdEncoding.EncodeToString(bytes.Repeat([]byte("X"), 1000)),
+		"data_shards":   4,
+		"parity_shards": 2,
+		"operator_id":   "op-1",
+	}
+	data, _ := json.Marshal(body)
+	resp, err := http.Post(srv.URL+"/local/files", "application/json", bytes.NewReader(data))
+	if err != nil {
+		t.Fatalf("POST /local/files: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected 200, got %d: %s", resp.StatusCode, respBody)
+	}
+}
+
+func TestLocalAPIFileList(t *testing.T) {
+	nodes := testNodes(t, 3)
+	for i := 1; i < len(nodes); i++ {
+		nodes[i-1].Ping(nodes[i].Addr())
+	}
+	time.Sleep(300 * time.Millisecond)
+
+	api := NewLocalAPI(nodes[0])
+	srv := httptest.NewServer(api.Handler())
+	defer srv.Close()
+
+	ciphertext := bytes.Repeat([]byte("Y"), 500)
+	nodes[0].DistributeFile(DistributeFileParams{
+		FileID: "list-file-001", FileName: "list.txt", FileSize: 500,
+		Cipher: "aes-256-gcm", Salt: make([]byte, 32), Nonce: make([]byte, 12),
+		Ciphertext: ciphertext, DataShards: 4, ParityShards: 2, OperatorID: "op-1",
+	})
+	time.Sleep(300 * time.Millisecond)
+
+	resp, err := http.Get(srv.URL + "/local/files?operator_id=op-1")
+	if err != nil {
+		t.Fatalf("GET /local/files: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+
+	var result FileIndex
+	json.NewDecoder(resp.Body).Decode(&result)
+	if len(result.FileIDs) < 1 {
+		t.Fatal("expected at least 1 file in index")
+	}
+}
+
+func TestLocalAPIFileDownload(t *testing.T) {
+	nodes := testNodes(t, 3)
+	for i := 1; i < len(nodes); i++ {
+		nodes[i-1].Ping(nodes[i].Addr())
+	}
+	time.Sleep(300 * time.Millisecond)
+
+	ciphertext := bytes.Repeat([]byte("Z"), 800)
+	nodes[0].DistributeFile(DistributeFileParams{
+		FileID: "dl-file-001", FileName: "download.bin", FileSize: int64(len(ciphertext)),
+		Cipher: "aes-256-gcm", Salt: make([]byte, 32), Nonce: make([]byte, 12),
+		Ciphertext: ciphertext, DataShards: 4, ParityShards: 2, OperatorID: "op-1",
+	})
+	time.Sleep(500 * time.Millisecond)
+
+	api := NewLocalAPI(nodes[1])
+	srv := httptest.NewServer(api.Handler())
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL + "/local/files/dl-file-001")
+	if err != nil {
+		t.Fatalf("GET /local/files/dl-file-001: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
 	}
 }

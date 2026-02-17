@@ -1,6 +1,7 @@
 package dht
 
 import (
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"io"
@@ -35,6 +36,8 @@ func (api *LocalAPI) Handler() http.Handler {
 	mux.HandleFunc("/local/compute/", api.handleComputeByID)
 	mux.HandleFunc("/local/compute", api.handleCompute)
 	mux.HandleFunc("/local/awareness", api.handleAwareness)
+	mux.HandleFunc("/local/files/", api.handleFilesByID)
+	mux.HandleFunc("/local/files", api.handleFiles)
 
 	return mux
 }
@@ -472,4 +475,169 @@ func (api *LocalAPI) getAwareness(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	w.Write(data)
+}
+
+// fileUploadRequest is the JSON body for POST /local/files.
+type fileUploadRequest struct {
+	FileID       string `json:"file_id"`
+	FileName     string `json:"file_name"`
+	FileSize     int64  `json:"file_size"`
+	Cipher       string `json:"cipher"`
+	Salt         string `json:"salt"`          // base64
+	Nonce        string `json:"nonce"`         // base64
+	Ciphertext   string `json:"ciphertext"`    // base64
+	DataShards   int    `json:"data_shards"`
+	ParityShards int    `json:"parity_shards"`
+	OperatorID   string `json:"operator_id"`
+}
+
+// handleFiles handles file listing and upload.
+// POST /local/files       -> DistributeFile
+// GET  /local/files?operator_id=X -> GetFileIndex
+func (api *LocalAPI) handleFiles(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodPost:
+		api.uploadFile(w, r)
+	case http.MethodGet:
+		api.listFiles(w, r)
+	default:
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+	}
+}
+
+func (api *LocalAPI) uploadFile(w http.ResponseWriter, r *http.Request) {
+	body, ok := readBody(w, r)
+	if !ok {
+		return
+	}
+
+	var req fileUploadRequest
+	if err := json.Unmarshal(body, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+		return
+	}
+
+	if req.FileID == "" {
+		writeError(w, http.StatusBadRequest, "file_id required")
+		return
+	}
+
+	salt, err := base64.StdEncoding.DecodeString(req.Salt)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid base64 salt: "+err.Error())
+		return
+	}
+	nonce, err := base64.StdEncoding.DecodeString(req.Nonce)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid base64 nonce: "+err.Error())
+		return
+	}
+	ciphertext, err := base64.StdEncoding.DecodeString(req.Ciphertext)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid base64 ciphertext: "+err.Error())
+		return
+	}
+
+	manifest, err := api.node.DistributeFile(DistributeFileParams{
+		FileID:       req.FileID,
+		FileName:     req.FileName,
+		FileSize:     req.FileSize,
+		Cipher:       req.Cipher,
+		Salt:         salt,
+		Nonce:        nonce,
+		Ciphertext:   ciphertext,
+		DataShards:   req.DataShards,
+		ParityShards: req.ParityShards,
+		OperatorID:   req.OperatorID,
+	})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "distribute file failed: "+err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusOK, manifest)
+}
+
+func (api *LocalAPI) listFiles(w http.ResponseWriter, r *http.Request) {
+	operatorID := r.URL.Query().Get("operator_id")
+	if operatorID == "" {
+		writeError(w, http.StatusBadRequest, "operator_id parameter required")
+		return
+	}
+
+	index, err := api.node.GetFileIndex(operatorID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "get file index failed: "+err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusOK, index)
+}
+
+// handleFilesByID handles file operations by ID.
+// GET    /local/files/{id}       -> RetrieveManifest
+// GET    /local/files/{id}/data  -> ReconstructFile
+// DELETE /local/files/{id}?operator_id=X -> DeleteDistributedFile
+func (api *LocalAPI) handleFilesByID(w http.ResponseWriter, r *http.Request) {
+	// Parse: /local/files/{id} or /local/files/{id}/data
+	path := strings.TrimPrefix(r.URL.Path, "/local/files/")
+	if path == "" {
+		writeError(w, http.StatusBadRequest, "file ID required in path")
+		return
+	}
+
+	parts := strings.SplitN(path, "/", 2)
+	fileID := parts[0]
+
+	// Check if this is a /data sub-resource request.
+	if len(parts) == 2 && parts[1] == "data" {
+		if r.Method != http.MethodGet {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		api.downloadFileData(w, r, fileID)
+		return
+	}
+
+	switch r.Method {
+	case http.MethodGet:
+		api.getFileManifest(w, r, fileID)
+	case http.MethodDelete:
+		api.deleteFile(w, r, fileID)
+	default:
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+	}
+}
+
+func (api *LocalAPI) getFileManifest(w http.ResponseWriter, _ *http.Request, fileID string) {
+	manifest, err := api.node.RetrieveManifest(fileID)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "manifest not found: "+err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusOK, manifest)
+}
+
+func (api *LocalAPI) downloadFileData(w http.ResponseWriter, _ *http.Request, fileID string) {
+	data, err := api.node.ReconstructFile(fileID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "reconstruct file failed: "+err.Error())
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/octet-stream")
+	w.WriteHeader(http.StatusOK)
+	w.Write(data)
+}
+
+func (api *LocalAPI) deleteFile(w http.ResponseWriter, r *http.Request, fileID string) {
+	operatorID := r.URL.Query().Get("operator_id")
+
+	if err := api.node.DeleteDistributedFile(fileID, operatorID); err != nil {
+		writeError(w, http.StatusInternalServerError, "delete file failed: "+err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted", "file_id": fileID})
 }
