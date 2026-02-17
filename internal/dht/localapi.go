@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"strconv"
@@ -522,6 +523,11 @@ func (api *LocalAPI) uploadFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if req.DataShards <= 0 || req.ParityShards <= 0 {
+		writeError(w, http.StatusBadRequest, "data_shards and parity_shards must be positive")
+		return
+	}
+
 	salt, err := base64.StdEncoding.DecodeString(req.Salt)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "invalid base64 salt: "+err.Error())
@@ -612,7 +618,11 @@ func (api *LocalAPI) handleFilesByID(w http.ResponseWriter, r *http.Request) {
 func (api *LocalAPI) getFileManifest(w http.ResponseWriter, _ *http.Request, fileID string) {
 	manifest, err := api.node.RetrieveManifest(fileID)
 	if err != nil {
-		writeError(w, http.StatusNotFound, "manifest not found: "+err.Error())
+		if errors.Is(err, ErrManifestNotFound) {
+			writeError(w, http.StatusNotFound, "manifest not found")
+		} else {
+			writeError(w, http.StatusInternalServerError, "retrieve manifest: "+err.Error())
+		}
 		return
 	}
 
@@ -627,12 +637,17 @@ func (api *LocalAPI) downloadFileData(w http.ResponseWriter, _ *http.Request, fi
 	}
 
 	w.Header().Set("Content-Type", "application/octet-stream")
+	w.Header().Set("Content-Length", strconv.Itoa(len(data)))
 	w.WriteHeader(http.StatusOK)
 	w.Write(data)
 }
 
 func (api *LocalAPI) deleteFile(w http.ResponseWriter, r *http.Request, fileID string) {
 	operatorID := r.URL.Query().Get("operator_id")
+	if operatorID == "" {
+		writeError(w, http.StatusBadRequest, "operator_id parameter required")
+		return
+	}
 
 	if err := api.node.DeleteDistributedFile(fileID, operatorID); err != nil {
 		writeError(w, http.StatusInternalServerError, "delete file failed: "+err.Error())

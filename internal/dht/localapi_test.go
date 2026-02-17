@@ -416,7 +416,7 @@ func TestLocalAPIFileList(t *testing.T) {
 	}
 }
 
-func TestLocalAPIFileDownload(t *testing.T) {
+func TestLocalAPIFileManifest(t *testing.T) {
 	nodes := testNodes(t, 3)
 	for i := 1; i < len(nodes); i++ {
 		nodes[i-1].Ping(nodes[i].Addr())
@@ -443,5 +443,44 @@ func TestLocalAPIFileDownload(t *testing.T) {
 
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+}
+
+func TestLocalAPIFileDownload(t *testing.T) {
+	nodes := testNodes(t, 3)
+	for i := 1; i < len(nodes); i++ {
+		nodes[i-1].Ping(nodes[i].Addr())
+	}
+	time.Sleep(300 * time.Millisecond)
+
+	ciphertext := bytes.Repeat([]byte("Z"), 800)
+	nodes[0].DistributeFile(DistributeFileParams{
+		FileID: "dl-file-002", FileName: "download.bin", FileSize: int64(len(ciphertext)),
+		Cipher: "aes-256-gcm", Salt: make([]byte, 32), Nonce: make([]byte, 12),
+		Ciphertext: ciphertext, DataShards: 4, ParityShards: 2, OperatorID: "op-1",
+	})
+	time.Sleep(500 * time.Millisecond)
+
+	api := NewLocalAPI(nodes[1])
+	srv := httptest.NewServer(api.Handler())
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL + "/local/files/dl-file-002/data")
+	if err != nil {
+		t.Fatalf("GET /local/files/dl-file-002/data: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected 200, got %d: %s", resp.StatusCode, body)
+	}
+
+	got, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read response body: %v", err)
+	}
+	if !bytes.Equal(got, ciphertext) {
+		t.Fatalf("response body mismatch: got %d bytes, want %d bytes", len(got), len(ciphertext))
 	}
 }
