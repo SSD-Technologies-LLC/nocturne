@@ -14,4 +14,5 @@ COPY --from=builder /app/nocturne .
 COPY --from=builder /app/nocturne-node .
 COPY --from=builder /app/nocturne-agent .
 EXPOSE 8080
+EXPOSE 4001/udp
 CMD ["./nocturne"]
