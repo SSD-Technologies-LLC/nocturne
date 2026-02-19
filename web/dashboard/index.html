@@ -13,8 +13,14 @@
 
   <!-- Header -->
   <header class="header">
-    <div class="logo">NOCTURNE</div>
-    <div class="tagline">encrypted file storage</div>
+    <div class="header-left">
+      <div class="logo">NOCTURNE</div>
+      <div class="tagline">encrypted file storage</div>
+    </div>
+    <div class="network-status" id="networkStatus">
+      <span class="network-dot offline"></span>
+      <span class="network-label">local</span>
+    </div>
   </header>
 
   <!-- Recovery Banner -->
@@ -71,6 +77,20 @@
             <input type="radio" name="cipher" value="noctis">
             <span class="cipher-label">NOCTIS</span>
             <span class="cipher-tag">experimental</span>
+          </label>
+        </div>
+      </div>
+      <div class="form-group" id="storageModeGroup" style="display:none;">
+        <label class="form-label">Storage</label>
+        <div class="storage-selector" id="storageSelector">
+          <label class="storage-option selected" data-storage="p2p">
+            <input type="radio" name="storageMode" value="p2p" checked>
+            <span class="storage-label">P2P</span>
+            <span class="storage-tag">distributed</span>
+          </label>
+          <label class="storage-option" data-storage="local">
+            <input type="radio" name="storageMode" value="local">
+            <span class="storage-label">LOCAL</span>
           </label>
         </div>
       </div>

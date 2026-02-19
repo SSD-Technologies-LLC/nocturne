@@ -9,6 +9,7 @@
   let selectedFile = null;   // file pending upload
   let linkModalFileId = null;
   let expandedLinks = {};    // fileId -> boolean
+  let dhtEnabled = false;
 
   // ── Auth ──────────────────────────────────────────────────
   function getToken() {
@@ -56,12 +57,14 @@
   document.addEventListener('DOMContentLoaded', function () {
     initDragDrop();
     initCipherSelector();
+    initStorageSelector();
     initModeSelector();
     if (!getToken()) {
       showLogin();
     } else {
       fetchFiles();
       checkRecoveryBanner();
+      checkDHTStatus();
     }
   });
 
@@ -187,6 +190,10 @@
     var top = el('div', { className: 'file-card-top' });
     top.appendChild(el('div', { className: 'file-card-name', textContent: f.name, title: f.name }));
     top.appendChild(el('span', { className: 'cipher-badge ' + cipherClass, textContent: cipherLabel }));
+    var storageMode = f.storage_mode || 'local';
+    var storageBadgeClass = storageMode === 'p2p' ? 'p2p' : 'local';
+    var storageBadgeLabel = storageMode === 'p2p' ? 'P2P' : 'LOCAL';
+    top.appendChild(el('span', { className: 'storage-badge ' + storageBadgeClass, textContent: storageBadgeLabel }));
     card.appendChild(top);
 
     // Meta row
@@ -269,12 +276,15 @@
     try {
       var fd = new FormData();
 
-      // P2P mode: client-side encryption when crypto.js is loaded
-      if (window.nocturneEncrypt) {
+      var storageMode = 'local';
+      if (dhtEnabled) {
+        storageMode = document.querySelector('#storageSelector input[name="storageMode"]:checked').value;
+      }
+
+      if (storageMode === 'p2p' && window.nocturneEncrypt) {
         var arrayBuffer = await file.arrayBuffer();
         var encrypted = await window.nocturneEncrypt(new Uint8Array(arrayBuffer), password);
 
-        // Send pre-encrypted ciphertext
         fd.append('file', new Blob([encrypted.ciphertext]), file.name);
         fd.append('pre_encrypted', 'true');
         fd.append('storage_mode', 'p2p');
@@ -283,10 +293,10 @@
         fd.append('nonce', window.nocturneToBase64(encrypted.nonce));
         fd.append('original_size', file.size.toString());
       } else {
-        // Fallback: server-side encryption
         fd.append('file', file);
         fd.append('password', password);
         fd.append('cipher', cipher);
+        fd.append('storage_mode', 'local');
       }
 
       var res = await api('POST', '/api/files', fd, true);
@@ -449,6 +459,37 @@
     } catch (err) {
       // Show banner by default if we can't check
       document.getElementById('recoveryBanner').classList.remove('hidden');
+    }
+  }
+
+  function updateNetworkStatus(enabled, peerCount) {
+    var statusEl = document.getElementById('networkStatus');
+    if (!statusEl) return;
+    var dot = statusEl.querySelector('.network-dot');
+    var label = statusEl.querySelector('.network-label');
+    if (enabled) {
+      dot.classList.remove('offline');
+      dot.classList.add('online');
+      label.textContent = peerCount + ' peer' + (peerCount !== 1 ? 's' : '');
+    } else {
+      dot.classList.remove('online');
+      dot.classList.add('offline');
+      label.textContent = 'local';
+    }
+  }
+
+  async function checkDHTStatus() {
+    try {
+      var res = await fetch('/api/health');
+      var data = await res.json();
+      dhtEnabled = data.dht_enabled === true;
+      var group = document.getElementById('storageModeGroup');
+      if (group) {
+        group.style.display = dhtEnabled ? '' : 'none';
+      }
+      updateNetworkStatus(dhtEnabled, data.dht_peers || 0);
+    } catch (err) {
+      dhtEnabled = false;
     }
   }
 
@@ -657,6 +698,18 @@
   // ── Cipher Selector ────────────────────────────────────────
   function initCipherSelector() {
     var options = document.querySelectorAll('#cipherSelector .cipher-option');
+    options.forEach(function (opt) {
+      opt.addEventListener('click', function () {
+        options.forEach(function (o) { o.classList.remove('selected'); });
+        opt.classList.add('selected');
+        opt.querySelector('input').checked = true;
+      });
+    });
+  }
+
+  // ── Storage Selector ─────────────────────────────────────────
+  function initStorageSelector() {
+    var options = document.querySelectorAll('#storageSelector .storage-option');
     options.forEach(function (opt) {
       opt.addEventListener('click', function () {
         options.forEach(function (o) { o.classList.remove('selected'); });
