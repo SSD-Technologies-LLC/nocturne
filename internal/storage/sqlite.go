@@ -415,7 +415,7 @@ func (d *DB) GetFile(id string) (*File, error) {
 // ListFiles returns all files without their blob data (for listing).
 func (d *DB) ListFiles() ([]File, error) {
 	rows, err := d.db.Query(
-		`SELECT id, name, size, mime_type, cipher, salt, nonce, recovery_id, created_at FROM files`,
+		`SELECT id, name, size, mime_type, cipher, salt, nonce, recovery_id, created_at, length(blob) FROM files`,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("list files: %w", err)
@@ -425,7 +425,7 @@ func (d *DB) ListFiles() ([]File, error) {
 	var files []File
 	for rows.Next() {
 		var f File
-		if err := rows.Scan(&f.ID, &f.Name, &f.Size, &f.MimeType, &f.Cipher, &f.Salt, &f.Nonce, &f.RecoveryID, &f.CreatedAt); err != nil {
+		if err := rows.Scan(&f.ID, &f.Name, &f.Size, &f.MimeType, &f.Cipher, &f.Salt, &f.Nonce, &f.RecoveryID, &f.CreatedAt, &f.BlobLen); err != nil {
 			return nil, fmt.Errorf("scan file: %w", err)
 		}
 		files = append(files, f)

@@ -873,6 +873,34 @@ func TestUploadFile_P2P(t *testing.T) {
 	}
 }
 
+// TestListFiles_IncludesStorageMode tests that the file list response includes storage_mode.
+func TestListFiles_IncludesStorageMode(t *testing.T) {
+	srv := setupTestServer(t)
+
+	// Upload a file (local storage, no DHT)
+	uploadTestFile(t, srv, "test.txt", "hello", "password123")
+
+	req := httptest.NewRequest(http.MethodGet, "/api/files", nil)
+	req.Header.Set("Authorization", "Bearer test-secret")
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+
+	var files []map[string]any
+	if err := json.NewDecoder(rec.Body).Decode(&files); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(files) != 1 {
+		t.Fatalf("len = %d, want 1", len(files))
+	}
+	if files[0]["storage_mode"] != "local" {
+		t.Errorf("storage_mode = %v, want %q", files[0]["storage_mode"], "local")
+	}
+}
+
 // TestPublicDownload_P2P tests the full P2P download flow: upload via P2P,
 // create a link, then download and verify content matches original plaintext.
 func TestPublicDownload_P2P(t *testing.T) {

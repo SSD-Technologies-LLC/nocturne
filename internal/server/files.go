@@ -344,14 +344,19 @@ func (s *Server) handleListFiles(w http.ResponseWriter, r *http.Request) {
 	// Build response without sensitive fields
 	result := make([]map[string]any, len(files))
 	for i, f := range files {
+		storageMode := "local"
+		if f.BlobLen == 0 && f.Size > 0 {
+			storageMode = "p2p"
+		}
 		result[i] = map[string]any{
-			"id":          f.ID,
-			"name":        f.Name,
-			"size":        f.Size,
-			"mime_type":   f.MimeType,
-			"cipher":      f.Cipher,
-			"recovery_id": f.RecoveryID,
-			"created_at":  f.CreatedAt,
+			"id":           f.ID,
+			"name":         f.Name,
+			"size":         f.Size,
+			"mime_type":    f.MimeType,
+			"cipher":       f.Cipher,
+			"recovery_id":  f.RecoveryID,
+			"created_at":   f.CreatedAt,
+			"storage_mode": storageMode,
 		}
 	}
 

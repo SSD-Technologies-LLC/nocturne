@@ -12,6 +12,7 @@ type File struct {
 	Blob       []byte `json:"-"`
 	RecoveryID string `json:"recovery_id"`
 	CreatedAt  int64  `json:"created_at"`
+	BlobLen    int64  `json:"-"` // populated by ListFiles via length(blob), avoids loading full blob
 }
 
 type RecoveryKey struct {
