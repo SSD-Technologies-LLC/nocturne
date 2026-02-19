@@ -3,6 +3,8 @@ WORKDIR /app
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
+ARG RAILWAY_GIT_COMMIT_SHA
+RUN echo "build: ${RAILWAY_GIT_COMMIT_SHA:-dev}"
 RUN CGO_ENABLED=0 go build -o nocturne ./cmd/nocturne
 RUN CGO_ENABLED=0 go build -o nocturne-node ./cmd/nocturne-node
 RUN CGO_ENABLED=0 go build -o nocturne-agent ./cmd/nocturne-agent
