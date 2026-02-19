@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/signal"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -56,13 +57,19 @@ func main() {
 			dhtPort, _ = strconv.Atoi(p)
 		}
 
+		var bootstrapPeers []string
+		if bp := os.Getenv("NOCTURNE_DHT_BOOTSTRAP"); bp != "" {
+			bootstrapPeers = strings.Split(bp, ",")
+		}
+
 		cfg := dht.Config{
-			PrivateKey: priv,
-			PublicKey:  pub,
-			K:          20,
-			Alpha:      3,
-			Port:       dhtPort,
-			BindAddr:   "0.0.0.0",
+			PrivateKey:     priv,
+			PublicKey:      pub,
+			K:              20,
+			Alpha:          3,
+			Port:           dhtPort,
+			BindAddr:       "0.0.0.0",
+			BootstrapPeers: bootstrapPeers,
 		}
 
 		dhtNode, err := dht.NewNode(cfg)
