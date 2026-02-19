@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"crypto/ed25519"
 	"fmt"
 	"log"
 	"net/http"
@@ -47,9 +46,9 @@ func main() {
 
 	// Optionally start a DHT node for P2P distributed storage.
 	if os.Getenv("NOCTURNE_DHT_ENABLED") == "true" {
-		pub, priv, err := ed25519.GenerateKey(nil)
+		pub, priv, err := dht.LoadOrGenerateKeypair(dataDir + "/dht.key")
 		if err != nil {
-			log.Fatalf("Failed to generate DHT keypair: %v", err)
+			log.Fatalf("Failed to load DHT keypair: %v", err)
 		}
 
 		dhtPort := 0
