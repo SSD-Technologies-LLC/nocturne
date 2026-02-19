@@ -124,15 +124,66 @@ func TestServer_HealthEndpoint(t *testing.T) {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
 	}
 
-	var body map[string]string
+	var body map[string]any
 	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
 	if body["status"] != "ok" {
-		t.Errorf("status = %q, want %q", body["status"], "ok")
+		t.Errorf("status = %v, want %q", body["status"], "ok")
 	}
 	if body["service"] != "nocturne" {
-		t.Errorf("service = %q, want %q", body["service"], "nocturne")
+		t.Errorf("service = %v, want %q", body["service"], "nocturne")
+	}
+}
+
+func TestServer_HealthEndpoint_DHTStatus(t *testing.T) {
+	srv := setupTestServer(t)
+
+	// Without DHT — dht_enabled should be false
+	req := httptest.NewRequest(http.MethodGet, "/api/health", nil)
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+
+	var body map[string]any
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if body["dht_enabled"] != false {
+		t.Errorf("dht_enabled = %v, want false", body["dht_enabled"])
+	}
+
+	// With DHT — dht_enabled should be true, dht_peers should be 0
+	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
+	dhtNode, err := dht.NewNode(dht.Config{
+		PublicKey:  pub,
+		PrivateKey: priv,
+	})
+	if err != nil {
+		t.Fatalf("NewNode: %v", err)
+	}
+	if err := dhtNode.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer dhtNode.Close()
+	srv.SetDHTNode(dhtNode)
+
+	rec2 := httptest.NewRecorder()
+	req2 := httptest.NewRequest(http.MethodGet, "/api/health", nil)
+	srv.ServeHTTP(rec2, req2)
+
+	var body2 map[string]any
+	if err := json.NewDecoder(rec2.Body).Decode(&body2); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if body2["dht_enabled"] != true {
+		t.Errorf("dht_enabled = %v, want true", body2["dht_enabled"])
+	}
+	if body2["dht_peers"] != float64(0) {
+		t.Errorf("dht_peers = %v, want 0", body2["dht_peers"])
 	}
 }
 

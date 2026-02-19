@@ -136,10 +136,17 @@ func (s *Server) routes() {
 
 // handleHealth returns a simple health check response.
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]string{
-		"status":  "ok",
-		"service": "nocturne",
-	})
+	resp := map[string]any{
+		"status":      "ok",
+		"service":     "nocturne",
+		"dht_enabled": s.dhtNode != nil,
+	}
+	if s.dhtNode != nil {
+		resp["dht_peers"] = s.dhtNode.Table().Size()
+	} else {
+		resp["dht_peers"] = 0
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 // writeJSON writes a JSON response with the given status code.
